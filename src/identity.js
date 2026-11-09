@@ -73,5 +73,6 @@ export async function confirmDanger(server, cmd) {
 
 // Il terminale ha ancora il focus: lo sposto su "Annulla" così Invio non conferma per sbaglio.
 export function focusDangerCancel() {
-  setTimeout(() => document.querySelector('.danger-confirm')?.closest('.modal')?.querySelector('.btn')?.focus(), 40);
+  const go = () => document.querySelector('.danger-confirm')?.closest('.modal')?.querySelector('.btn')?.focus();
+  for (const ms of [40, 120, 300]) setTimeout(go, ms);
 }

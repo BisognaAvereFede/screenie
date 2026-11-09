@@ -1,6 +1,7 @@
 import '@fontsource-variable/plus-jakarta-sans';
 import './style.css';
 import './features.css';
+import './flat.css';
 import { h, icon, iconButton, toast, fail, modal, confirmDialog, contextMenu, menuAnchor, isMenuKey, formatSize, enter, leave, motionOK } from './dom.js';
 import { createTerminalTab, configureTerminals, setBroadcast, isBroadcasting, restoreSplits } from './terminal.js';
 import { createEditorTab } from './editor.js';
@@ -96,7 +97,6 @@ const serverCard = h('div', { class: 'server-card' });
 const panelBody = h('div', { class: 'panel-content' });
 const statsGrid = h('div', { class: 'stats' });
 const tunnelList = h('div', { class: 'tunnel-list' });
-const pageTitle = h('h1', { class: 'page-title' });
 const transfers = h('div', { class: 'transfers' });
 const broadcastBar = h('div', { class: 'broadcast-bar hidden', role: 'status' });
 const updateBar = h('div', { class: 'update-bar hidden', role: 'status' });
@@ -120,7 +120,8 @@ const sidebarToggle = iconButton('sidebarLeft', 'Mostra la barra laterale', () =
 const sidebarCollapse = iconButton('chevronLeft', 'Nascondi la barra laterale', () => commands.toggleSidebar(), 'collapse-btn');
 const inspectorToggle = iconButton('sidebarRight', 'Pannello server', () => commands.toggleInspector(), 'round panel-toggle');
 const paletteBtn = h('button', { class: 'palette-btn', type: 'button', onclick: () => commands.palette() },
-  icon('search', 15), h('span', {}, 'Cerca o esegui un comando'), h('kbd', {}, keyHint('palette')));
+  icon('search', 15), h('span', {}, 'Cerca'), h('kbd', {}, keyHint('palette')));
+const newTabBtn = iconButton('plus', 'Nuovo terminale sul server selezionato', () => commands.newTerminal(), 'new-tab-btn');
 const settingsBtn = h('button', { class: 'nav-item sidebar-settings', type: 'button', onclick: () => openSettings() }, icon('settings', 18), h('span', {}, 'Impostazioni'));
 const recipesBtn = h('button', { class: 'nav-item', type: 'button', onclick: () => openRecipes() }, icon('snippet', 18), h('span', {}, 'Ricette'));
 const historyBtn = h('button', { class: 'nav-item', type: 'button', onclick: () => openHistory() }, icon('clock', 18), h('span', {}, 'Cronologia'));
@@ -179,17 +180,16 @@ document.getElementById('app').append(
     h('div', { class: 'sidebar-foot' }, recipesBtn, historyBtn, settingsBtn),
     resizer('left')),
   h('main', { class: 'workspace' },
+    // Barra in alto: le schede (raggruppate per server), un "+" per un nuovo terminale, la ricerca.
     h('header', { class: 'topbar' },
       sidebarToggle,
-      h('div', { class: 'title-block' }, pageTitle),
-      h('span', { class: 'spacer' }),
+      tabBar,
+      newTabBtn,
+      h('span', { class: 'drag-space' }),
       paletteBtn,
-      iconButton('help', 'Scorciatoie da tastiera', () => commands.shortcuts(), 'round'),
-      iconButton('terminal', 'Nuovo terminale', () => commands.newTerminal(), 'round'),
       inspectorToggle),
     updateBar,
     broadcastBar,
-    tabBar,
     h('div', { class: 'tab-card' }, tabArea),
     focusExit),
   h('aside', { class: 'side-panel', 'aria-label': 'Stato del server e screen' },
@@ -317,11 +317,9 @@ function updateTitle() {
     const s = serverOf(tab.serverId);
     title = tab.termTitle || (s ? `${s.username}@${s.host}` : serverName(tab.serverId));
   }
-  if (pageTitle.textContent !== title) {
-    pageTitle.textContent = title;
-    pageTitle.title = title;
-    if (motionOK()) pageTitle.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: 'ease-out' });
-  }
+  // Il titolo va nella finestra (barra delle applicazioni): a schermo lo dicono già le schede.
+  document.title = title === 'Home' ? 'Screenie' : `${title} · Screenie`;
+  newTabBtn.disabled = !app.current;
   settingsBtn.classList.toggle('active', tab?.kind === 'settings');
   if (tab?.kind === 'settings') settingsBtn.setAttribute('aria-current', 'page');
   else settingsBtn.removeAttribute('aria-current');
@@ -590,11 +588,11 @@ function sparkline(values) {
 
 function statCard({ label, value, sub, ratio, tone, spark }) {
   const level = ratio == null ? '' : ratio >= 90 ? 'crit' : ratio >= 80 ? 'warn' : '';
+  // Una riga per valore: nome e dettaglio, grafico o barra, numero.
   return h('div', { class: `stat ${tone || ''} ${level}` },
-    h('div', { class: 'stat-label' }, label),
-    h('div', { class: 'stat-value' }, value),
-    spark ? sparkline(spark) : ratio != null && h('div', { class: 'stat-bar' }, h('div', { style: { width: `${Math.min(100, ratio)}%` } })),
-    h('div', { class: 'stat-sub' }, sub));
+    h('div', { class: 'stat-text' }, h('div', { class: 'stat-label' }, label), h('div', { class: 'stat-sub' }, sub)),
+    spark ? sparkline(spark) : ratio != null ? h('div', { class: 'stat-bar' }, h('div', { style: { width: `${Math.min(100, ratio)}%` } })) : h('span'),
+    h('div', { class: 'stat-value' }, value));
 }
 
 function renderStats() {
@@ -951,9 +949,34 @@ let tabSeq = 0;
 let dragging = null;
 const TAB_ICONS = { editor: 'file', screen: 'layers', home: 'home', settings: 'settings', history: 'clock', recipes: 'snippet', timeline: 'clock', services: 'activity', notes: 'edit' };
 
+// Nome breve della scheda: il server lo dice già l'etichetta del gruppo.
+function shortLabel(tab) {
+  if (!tab.serverId) return tab.title;
+  const prefix = `${serverName(tab.serverId)} · `;
+  const rest = tab.title.startsWith(prefix) ? tab.title.slice(prefix.length) : tab.title;
+  if (tab.kind === 'term' && /^\d+$/.test(rest)) return `Terminale ${rest}`;
+  return { storia: 'Storia', servizi: 'Servizi', diario: 'Diario' }[rest] || rest;
+}
+
+// Le schede dello stesso server stanno vicine, precedute dal nome del server.
+function renderTabGroups() {
+  for (const l of tabBar.querySelectorAll('.tab-group')) l.remove();
+  let prev = null;
+  for (const t of app.tabs) {
+    const g = t.serverId || null;
+    if (g && g !== prev) {
+      const s = serverOf(g);
+      tabBar.insertBefore(h('span', { class: 'tab-group', style: { '--server-color': colorOf(s) }, title: s ? `${s.username}@${s.host}` : '', 'aria-hidden': 'true' },
+        h('span', { class: 'tab-group-dot' }), s?.name || '?'), t.btn);
+    }
+    t.btn.classList.toggle('in-group', !!g);
+    prev = g;
+  }
+}
+
 function addTab(tab, { background = false } = {}) {
   tab.uid = `tab${++tabSeq}`;
-  const label = h('span', { class: 'tab-label' }, tab.title);
+  const label = h('span', { class: 'tab-label' }, shortLabel(tab));
   const dot = h('span', { class: 'tab-state' });
   const btn = h('div', {
     class: `tab kind-${tab.kind}`,
@@ -973,7 +996,8 @@ function addTab(tab, { background = false } = {}) {
         next.btn.focus();
       }
     },
-    title: tab.serverId ? `${serverName(tab.serverId)} · ${tab.path || tab.title}` : tab.title,
+    title: tab.serverId ? `${serverName(tab.serverId)} · ${tab.path || shortLabel(tab)}` : tab.title,
+    'aria-label': tab.serverId ? `${shortLabel(tab)}, ${serverName(tab.serverId)}` : tab.title,
     onmousedown: (e) => { if (e.button === 1) { e.preventDefault(); closeTab(tab.uid); } },
     onclick: () => activate(tab.uid),
     // Riordino trascinando le schede (la Home resta prima).
@@ -983,6 +1007,7 @@ function addTab(tab, { background = false } = {}) {
       dragging = null;
       const order = [...tabBar.children];
       app.tabs.sort((a, b) => order.indexOf(a.btn) - order.indexOf(b.btn));
+      renderTabGroups();
       saveSession();
     },
     ondragover: (e) => {
@@ -1016,8 +1041,15 @@ function addTab(tab, { background = false } = {}) {
   tab.setDirty = (d) => btn.classList.toggle('dirty', d);
   tab.setActivity = (a) => btn.classList.toggle('activity', a && app.active !== tab.uid);
   tab.close = (opts) => closeTab(tab.uid, opts?.force);
-  app.tabs.push(tab);
-  tabBar.append(btn);
+  // Ordine: Home, poi le pagine generali (Cronologia, Ricette, Impostazioni), poi i gruppi dei server.
+  // Una scheda di server va subito dopo l'ultima dello stesso server.
+  const at = tab.serverId
+    ? app.tabs.findLastIndex((t) => t.serverId === tab.serverId) + 1 || app.tabs.length
+    : (app.tabs.findIndex((t) => t.serverId) + 1 || app.tabs.length + 1) - 1;
+  const before = app.tabs[at];
+  app.tabs.splice(at, 0, tab);
+  if (before) tabBar.insertBefore(btn, before.btn); else tabBar.append(btn);
+  renderTabGroups();
   tab.el.classList.add('hidden');
   tabArea.append(tab.el);
   if (!background) activate(tab.uid);
@@ -1075,6 +1107,7 @@ async function closeTab(uid, force = false) {
   ], 160);
   tab.el.remove();
   app.tabs.splice(i, 1);
+  renderTabGroups();
   if (app.active === uid) {
     const next = app.tabs[i] || app.tabs[i - 1] || homeTab;
     activate(next.uid);
@@ -1597,6 +1630,9 @@ window.addEventListener('beforeunload', (e) => {
 
 applyLayout();
 addTab(homeTab);
+// La Home resta sempre visibile a sinistra, anche quando le altre schede scorrono.
+homeTab.btn.classList.add('pinned');
+tabBar.before(homeTab.btn);
 await loadServers();
 if (app.servers.length === 1) selectServer(app.servers[0].id);
 else updatePanel();

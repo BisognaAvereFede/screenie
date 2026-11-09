@@ -1,0 +1,150 @@
+/* Stile flat: niente ombre né rilievi, bordi sottili, angoli più contenuti, meno elementi a schermo.
+   Caricato per ultimo: sovrascrive le regole di style.css e features.css. */
+:root, :root[data-theme="light"], :root[data-theme="dark"] {
+  --r-sm: 6px;
+  --r: 8px;
+  --r-lg: 10px;
+  --r-xl: 12px;
+  --shadow-sm: none;
+  --shadow: 0 0 0 1px var(--line);
+}
+:root, :root[data-theme="light"] { --shadow-lg: 0 12px 32px rgb(30 36 70 / 12%), 0 0 0 1px var(--line); --bg: #f6f7fa; --panel: #f6f7fa; }
+:root[data-theme="dark"] { --shadow-lg: 0 16px 40px rgb(0 0 0 / 45%), 0 0 0 1px var(--line); --bg: #111217; --panel: #111217; --line: #262832; }
+
+/* ---------- Pulsanti ---------- */
+.btn { box-shadow: none !important; }
+.btn.primary:hover { background: var(--accent-hover); }
+.icon-btn.round, .icon-btn.round:hover { width: 34px; height: 34px; border-radius: var(--r); background: transparent; box-shadow: none; color: var(--muted); }
+.icon-btn.round:hover { background: var(--hover); color: var(--text); }
+.panel-toggle[aria-pressed="true"] { color: var(--accent-text); background: var(--accent-soft); }
+
+/* ---------- Colonne laterali: stesso fondo dell'area centrale, separate da una linea ---------- */
+.sidebar { border-right: 1px solid var(--line); }
+.side-panel { border-left: 1px solid var(--line); }
+.brand { padding: 18px 14px 8px 20px; }
+.brand-logo { width: 28px; height: 28px; }
+.brand-name { font-size: 18px; font-weight: 750; letter-spacing: -.02em; }
+.group-label { padding: 14px 14px 4px 20px; font-size: 11.5px; letter-spacing: .02em; }
+.server-item { min-height: 44px; padding: 5px 8px 5px 12px; gap: 10px; }
+.server-item.current { background: var(--hover); box-shadow: none; }
+.server-item .server-addr { font-size: 11.5px; }
+.sidebar-foot { padding: 6px 10px 0; display: flex; flex-direction: column; gap: 0; border-top: 1px solid var(--line); margin-top: auto; padding-top: 8px; }
+.nav-item, .sidebar-settings { height: 34px; gap: 10px; padding: 0 10px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.nav-item:hover { color: var(--text); background: var(--hover); }
+.nav-item.active { color: var(--text); background: var(--hover); }
+.nav-item::before { display: none; }
+.nav-item .icon svg { width: 16px; height: 16px; }
+
+/* ---------- Barra in alto con le schede ---------- */
+.workspace { padding: 0 14px 14px; }
+.topbar, .compact-top .topbar, .compact-term.compact-top .topbar { height: 52px; gap: 6px; }
+.drag-space { flex: 1; min-width: 32px; align-self: stretch; }
+.tab-bar { flex: 0 1 auto; min-width: 0; padding: 0; gap: 2px; align-items: center; overflow-x: auto; overflow-y: hidden; }
+.tab-bar:empty { display: flex; }
+.tab {
+  height: 32px; padding: 0 4px 0 10px; gap: 7px; border-radius: var(--r); max-width: 200px;
+  background: transparent; box-shadow: none; color: var(--muted); font-size: 13px;
+}
+.tab:hover { background: var(--hover); color: var(--text); }
+.tab.active { background: var(--card); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
+.tab.active .icon:first-of-type { color: var(--accent-text); }
+.tab-label { font-weight: 600; }
+.tab.kind-home { padding: 0 9px; }
+.tab.kind-home .tab-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.tab.kind-screen .icon:first-of-type, .tab.kind-editor .icon:first-of-type { color: inherit; }
+.tab.has-server { box-shadow: none; }
+.tab.active.has-server { box-shadow: 0 0 0 1px var(--line); }
+/* La X compare solo sulla scheda attiva o al passaggio del mouse. */
+.tab-close { width: 22px; height: 22px; opacity: 0; }
+.tab:hover .tab-close, .tab.active .tab-close, .tab:focus-visible .tab-close { opacity: .7; }
+.tab-close:hover { opacity: 1 !important; }
+.tab.dirty .tab-state { width: 6px; height: 6px; }
+.tab.activity:not(.active) .tab-label { color: var(--text); }
+.tab.activity:not(.active)::after { content: ''; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); margin-right: 4px; }
+/* Etichetta del server davanti alle sue schede */
+.tab-group { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 32px; padding: 0 6px 0 12px; margin-left: 6px;
+  font-size: 11.5px; font-weight: 700; color: var(--server-color); white-space: nowrap; max-width: 150px; overflow: hidden; text-overflow: ellipsis;
+  border-left: 1px solid var(--line); user-select: none; }
+.tab-group-dot { width: 7px; height: 7px; border-radius: 2px; background: var(--server-color); flex: none; }
+.new-tab-btn { width: 30px; height: 30px; color: var(--muted); }
+.new-tab-btn:disabled { opacity: .35; }
+.palette-btn { height: 32px; border-radius: var(--r); background: transparent; box-shadow: inset 0 0 0 1px var(--line); padding: 0 10px; gap: 8px; font-size: 12.5px; }
+.palette-btn:hover { background: var(--hover); box-shadow: inset 0 0 0 1px var(--line); }
+.palette-btn kbd { font-size: 10.5px; opacity: .8; }
+@media (max-width: 1250px) { .palette-btn span, .palette-btn kbd { display: none; } .palette-btn { padding: 0 9px; } }
+
+/* ---------- Area di lavoro ---------- */
+.tab-card { border-radius: var(--r-lg); box-shadow: 0 0 0 1px var(--line); }
+.tab-card.server-tinted { box-shadow: 0 0 0 1px color-mix(in srgb, var(--server-color) 45%, var(--line)); }
+.tab-card.is-page { box-shadow: none; }
+.compact-term .tab-card:not(.is-page) { border-radius: var(--r-lg); }
+.term-host { box-shadow: none !important; }
+.page-inner { gap: 16px; padding-top: 6px; }
+.page-head h2, .page-h { font-size: 20px; font-weight: 750; letter-spacing: -.015em; margin: 0 0 2px; }
+.page-head p { font-size: 13px; }
+.card, .settings-card { padding: 18px; }
+.card-title, .settings-card h2 { font-size: 15px; font-weight: 700; }
+
+/* ---------- Pannello del server: righe compatte al posto delle schede ---------- */
+.server-card { padding: 14px 14px 8px 16px; }
+.server-card .server-name { font-size: 15px; font-weight: 750; }
+.panel-content { padding-top: 4px; }
+.section-head { padding-left: 16px !important; padding-right: 12px !important; font-size: 12px; }
+.stats { display: flex; flex-direction: column; gap: 0; padding: 0 16px; }
+.stat { display: grid; grid-template-columns: minmax(0, 1fr) 84px 46px; align-items: center; gap: 10px; padding: 8px 0; background: transparent; box-shadow: none; border-radius: 0; border-top: 1px solid var(--line); }
+.stat:first-child { border-top: 0; }
+.stat-text { min-width: 0; }
+.stat-label { font-size: 12.5px; color: var(--text-2); font-weight: 600; }
+.stat-sub { font-size: 11px; margin-top: 1px; }
+.stat-value { font-size: 13.5px; font-weight: 700; margin: 0; text-align: right; letter-spacing: 0; color: var(--text); }
+.stat.purple .stat-value { color: var(--text); }
+.stat.warn .stat-value { color: var(--warn); }
+.stat.crit .stat-value { color: var(--danger); }
+.stat-bar { height: 4px; margin: 0; }
+.stat .spark { width: 84px; height: 22px; }
+.stats-empty { background: transparent; box-shadow: none; padding: 12px 0; }
+.tool-row { display: flex; gap: 4px; margin: 0 12px 10px; }
+.tool-btn { flex-direction: row; gap: 6px; padding: 6px 9px; background: transparent; color: var(--muted); font-size: 12.5px; border-radius: var(--r); }
+.tool-btn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.tool-btn svg { color: inherit; width: 14px; height: 14px; }
+.changes-card { margin: 0 14px 12px; padding: 10px 12px; background: transparent; border-left: 2px solid var(--accent); border-radius: 0; }
+.changes-head { color: var(--text); }
+.changes-card li > svg { color: var(--muted); }
+.latency-chip { background: transparent !important; padding: 0 !important; color: var(--faint) !important; }
+
+/* ---------- Home ---------- */
+.server-tile { box-shadow: 0 0 0 1px var(--line); }
+
+/* ---------- Menu, finestre e notifiche: restano in rilievo per distinguersi ---------- */
+.modal, .context-menu, .palette, .toast { box-shadow: var(--shadow-lg); }
+
+/* ---------- Schede: le pagine generali stanno prima dei gruppi dei server ---------- */
+.palette-btn { flex: none; }
+.tab-bar { scroll-behavior: smooth; }
+
+/* ---------- Screen: righe semplici, azioni solo al passaggio del mouse ---------- */
+.screens { padding: 0 16px 16px; }
+.screen-form { gap: 6px; padding-bottom: 8px; }
+.screen-form input { height: 32px; font-size: 12.5px; }
+.screen-form .btn { height: 32px; padding: 0 12px; font-size: 12.5px; }
+/* Il comando di avvio compare solo quando stai creando uno screen. */
+.screen-form > input:last-child { display: none; }
+.screen-form:focus-within > input:last-child { display: block; }
+.screen-list { gap: 0; }
+.screen-row { padding: 8px 4px 8px 6px; border-radius: var(--r); background: transparent; box-shadow: none !important; gap: 10px; }
+.screen-row:hover { background: var(--hover); }
+.screen-row > .tile { width: 26px; height: 26px; border-radius: 7px; }
+.screen-row > .tile svg { width: 14px; height: 14px; }
+.screen-name { font-weight: 650; font-size: 13px; }
+.screen-meta .chip { padding: 0 6px; font-size: 10.5px; }
+.screen-actions .btn { height: 26px; padding: 0 10px; font-size: 12px; }
+.screen-actions .icon-btn { width: 26px; height: 26px; }
+.screen-actions > :not(:first-child) { opacity: 0; transition: opacity .12s; }
+.screen-row:hover .screen-actions > *, .screen-row:focus-within .screen-actions > * { opacity: 1; }
+
+/* ---------- "Mentre eri via": senza triangolini ---------- */
+.changes-card summary { list-style: none; }
+.changes-card summary::-webkit-details-marker { display: none; }
+.changes-card summary:hover { text-decoration: underline; text-underline-offset: 2px; }
+.tab.pinned { flex: none; }
+.identity-row .swatches { justify-content: flex-start; width: 100%; }
