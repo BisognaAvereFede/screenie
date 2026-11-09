@@ -1,5 +1,6 @@
 import '@fontsource-variable/plus-jakarta-sans';
 import './style.css';
+import './features.css';
 import { h, icon, iconButton, toast, fail, modal, confirmDialog, contextMenu, menuAnchor, isMenuKey, formatSize, enter, leave, motionOK } from './dom.js';
 import { createTerminalTab, configureTerminals, setBroadcast, isBroadcasting, restoreSplits } from './terminal.js';
 import { createEditorTab } from './editor.js';
@@ -10,6 +11,12 @@ import { createSettingsPage } from './settings.js';
 import { applyAppearance, effectiveTheme } from './theme.js';
 import { actionFor, bindings, display, showShortcuts } from './keys.js';
 import { openPalette } from './palette.js';
+import { SERVER_COLORS, colorOf, glyphOf, serverBadge, dangerReason, confirmDanger } from './identity.js';
+import { createHistoryTab } from './history.js';
+import { createRecipesTab } from './recipes.js';
+import { createTimelineTab } from './timeline.js';
+import { createServicesTab } from './services.js';
+import { createNotesTab } from './notes.js';
 import logoUrl from './logo-mark.svg';
 
 const api = window.api;
@@ -24,6 +31,8 @@ const app = {
   history: new Map(), // serverId -> [{ cpu, mem }] ultimi 30 campioni
   latency: new Map(), // serverId -> ms
   tunnels: new Map(), // serverId -> [{ localPort, remoteHost, remotePort, ok, error }]
+  changes: new Map(), // serverId -> riepilogo "mentre eri via"
+  shares: new Map(), // termId -> { url, viewers, allowInput }
   closing: new Set(), // disconnessioni volute (niente riconnessione)
   reconnect: new Map(), // serverId -> { tries, timer }
   inspectorPeek: false, // pannello aperto a mano anche senza connessione
@@ -113,6 +122,9 @@ const inspectorToggle = iconButton('sidebarRight', 'Pannello server', () => comm
 const paletteBtn = h('button', { class: 'palette-btn', type: 'button', onclick: () => commands.palette() },
   icon('search', 15), h('span', {}, 'Cerca o esegui un comando'), h('kbd', {}, keyHint('palette')));
 const settingsBtn = h('button', { class: 'nav-item sidebar-settings', type: 'button', onclick: () => openSettings() }, icon('settings', 18), h('span', {}, 'Impostazioni'));
+const recipesBtn = h('button', { class: 'nav-item', type: 'button', onclick: () => openRecipes() }, icon('snippet', 18), h('span', {}, 'Ricette'));
+const historyBtn = h('button', { class: 'nav-item', type: 'button', onclick: () => openHistory() }, icon('clock', 18), h('span', {}, 'Cronologia'));
+const focusExit = h('button', { class: 'focus-exit', type: 'button', onclick: () => commands.focus() }, 'Esci dalla modalità focus');
 
 function resizer(side) {
   const handle = h('div', { class: `resizer resizer-${side}`, role: 'separator', 'aria-orientation': 'vertical', 'aria-label': side === 'left' ? 'Larghezza barra laterale' : 'Larghezza pannello server', tabindex: 0 });
@@ -164,7 +176,7 @@ document.getElementById('app').append(
     serverList,
     filesSection,
     transfers,
-    h('div', { class: 'sidebar-foot' }, settingsBtn),
+    h('div', { class: 'sidebar-foot' }, recipesBtn, historyBtn, settingsBtn),
     resizer('left')),
   h('main', { class: 'workspace' },
     h('header', { class: 'topbar' },
@@ -178,7 +190,8 @@ document.getElementById('app').append(
     updateBar,
     broadcastBar,
     tabBar,
-    h('div', { class: 'tab-card' }, tabArea)),
+    h('div', { class: 'tab-card' }, tabArea),
+    focusExit),
   h('aside', { class: 'side-panel', 'aria-label': 'Stato del server e screen' },
     resizer('right'),
     h('div', { class: 'window-drag' }),
@@ -207,6 +220,10 @@ configureTerminals({
   isOn: (id) => isOn(id),
   notify,
   snippets: () => app.settings.snippets || [],
+  onCommand: (id, cmd) => api.invoke('data:addHistory', id, cmd).catch(() => {}),
+  needsConfirm: (id, cmd) => !!serverOf(id)?.production && !!dangerReason(cmd),
+  confirm: (id, cmd) => confirmDanger(serverOf(id), cmd),
+  share: (tab) => shareDialog(tab),
   onBroadcastChange: (on, n) => {
     broadcastBar.classList.toggle('hidden', !on);
     broadcastBar.replaceChildren(
@@ -294,6 +311,7 @@ function updateTitle() {
   const tab = app.tabs.find((t) => t.uid === app.active);
   let title = 'Home';
   if (tab?.kind === 'settings') title = 'Impostazioni';
+  else if (tab && PAGE_KINDS.has(tab.kind) && tab.kind !== 'home') title = tab.title;
   else if (tab?.kind === 'editor') title = tab.path || tab.title;
   else if (tab?.serverId) {
     const s = serverOf(tab.serverId);
@@ -307,7 +325,9 @@ function updateTitle() {
   settingsBtn.classList.toggle('active', tab?.kind === 'settings');
   if (tab?.kind === 'settings') settingsBtn.setAttribute('aria-current', 'page');
   else settingsBtn.removeAttribute('aria-current');
-  document.body.classList.toggle('compact-top', !!tab && !['home', 'settings'].includes(tab.kind));
+  document.body.classList.toggle('compact-top', !!tab && !PAGE_KINDS.has(tab.kind));
+  recipesBtn.classList.toggle('active', tab?.kind === 'recipes');
+  historyBtn.classList.toggle('active', tab?.kind === 'history');
 }
 
 // ---------- Server ----------
@@ -322,6 +342,21 @@ async function loadServers() {
 const collapsed = new Set(JSON.parse((() => { try { return localStorage.getItem('collapsedGroups') || '[]'; } catch { return '[]'; } })()));
 const saveCollapsed = () => { try { localStorage.setItem('collapsedGroups', JSON.stringify([...collapsed])); } catch { /* */ } };
 
+// Sigla colorata del server con il "battito": il pallino pulsa più veloce quando il server è sotto sforzo.
+function heartbeat(id) {
+  const st = app.stats.get(id);
+  if (!st || !isOn(id)) return { dur: '2.4s', hot: false };
+  const cpu = pct(st.load, st.cpus);
+  return { dur: `${(2.6 - Math.min(100, cpu) / 100 * 2).toFixed(2)}s`, hot: cpu >= 85 };
+}
+function serverAvatar(s, status, error) {
+  const beat = heartbeat(s.id);
+  const label = status === 'on' ? (beat.hot ? 'connesso, sotto sforzo' : 'connesso') : status === 'connecting' ? 'connessione in corso' : error ? 'errore' : 'non connesso';
+  return h('span', { class: 'server-avatar', title: label },
+    serverBadge(s),
+    h('span', { class: `status-dot beat ${status} ${error ? 'error' : ''} ${beat.hot ? 'hot' : ''}`, style: { '--beat': beat.dur } }));
+}
+
 function serverItem(s) {
   const status = app.conn.get(s.id) || 'off';
   const err = app.errors.get(s.id);
@@ -331,6 +366,16 @@ function serverItem(s) {
     class: `server-item ${s.id === app.current ? 'current' : ''} ${status} ${err && status !== 'on' ? 'error' : ''}`,
     tabindex: 0,
     role: 'listitem',
+    style: { '--server-color': colorOf(s) },
+    'data-id': s.id,
+    ondragover: (e) => { if (e.dataTransfer?.types.includes('Files')) { e.preventDefault(); e.currentTarget.classList.add('drop'); } },
+    ondragleave: (e) => e.currentTarget.classList.remove('drop'),
+    ondrop: (e) => {
+      e.preventDefault();
+      e.currentTarget.classList.remove('drop');
+      const paths = [...(e.dataTransfer?.files || [])].map((f) => api.pathForFile(f)).filter(Boolean);
+      if (paths.length) publishDialog(s.id, paths);
+    },
     title: err && status !== 'on' ? err : `${s.username}@${s.host}`,
     'aria-label': `${s.name}, ${stateText}. Invio per connettere, tasto Menu per altre azioni`,
     onkeydown: (e) => {
@@ -349,6 +394,10 @@ function serverItem(s) {
           : { label: 'Connetti', icon: 'power', action: () => connectAndOpen(s.id) },
         status === 'on' && { label: 'Disconnetti', icon: 'logout', action: () => disconnect(s.id) },
         '-',
+        { label: 'Diario', icon: 'edit', action: () => openNotes(s.id) },
+        { label: 'Macchina del tempo', icon: 'clock', action: () => openTimeline(s.id) },
+        status === 'on' && { label: 'Mappa dei servizi', icon: 'activity', action: () => openServices(s.id) },
+        '-',
         { label: 'Modifica', icon: 'edit', action: () => editServer(s) },
         { label: 'Duplica', icon: 'filePlus', action: () => editServer({ ...s, id: undefined, name: `${s.name} (copia)` }) },
         s.hasSavedPassphrase && { label: 'Dimentica passphrase salvata', icon: 'key', action: async () => { await api.invoke('servers:forgetPassphrase', s.id); loadServers(); } },
@@ -356,9 +405,9 @@ function serverItem(s) {
       ]);
     },
   },
-  h('span', { class: `status-dot ${reconnecting ? 'connecting' : status} ${err && status !== 'on' ? 'error' : ''}` }),
+  serverAvatar(s, reconnecting ? 'connecting' : status, err && status !== 'on'),
   h('div', { class: 'server-text' },
-    h('div', { class: 'server-name' }, s.name),
+    h('div', { class: 'server-name' }, s.name, s.production && h('span', { class: 'prod-chip', title: 'Server di produzione: i comandi pericolosi chiedono conferma' }, 'prod')),
     h('div', { class: 'server-addr' }, `${s.username}@${s.host}${s.port !== 22 ? `:${s.port}` : ''}`)),
   status === 'on'
     ? iconButton('logout', 'Disconnetti', (e) => { e.stopPropagation(); disconnect(s.id); }, 'hover-only')
@@ -422,7 +471,7 @@ function updatePanel() {
   applyLayout();
   serverCard.replaceChildren(s
     ? h('div', { class: 'server-card-row' },
-      h('span', { class: `avatar ${status}` }, icon('server', 20)),
+      serverAvatar(s, app.reconnect.has(id) ? 'connecting' : status, !!err),
       h('div', { class: 'server-text' },
         h('div', { class: 'server-name' }, s.name),
         h('div', { class: 'server-addr' },
@@ -435,8 +484,12 @@ function updatePanel() {
 
   // Un solo messaggio quando non sei connesso, invece di uno per sezione.
   filesSection.classList.toggle('hidden', !isOn(id));
+  const tools = s && h('div', { class: 'tool-row' },
+    h('button', { class: 'tool-btn', type: 'button', onclick: () => openTimeline(id) }, icon('clock', 16), h('span', {}, 'Storia')),
+    h('button', { class: 'tool-btn', type: 'button', disabled: status !== 'on', onclick: () => openServices(id) }, icon('activity', 16), h('span', {}, 'Servizi')),
+    h('button', { class: 'tool-btn', type: 'button', onclick: () => openNotes(id) }, icon('edit', 16), h('span', {}, 'Diario')));
   if (status === 'on') {
-    panelBody.replaceChildren(...statsSection, tunnelSection, ...screensSection);
+    panelBody.replaceChildren(changesCard(id) || '', tools, ...statsSection, tunnelSection, ...screensSection);
     renderTunnels();
   } else {
     panelBody.replaceChildren(h('div', { class: `panel-empty ${err ? 'error' : ''}` },
@@ -446,12 +499,47 @@ function updatePanel() {
           h('p', {}, 'Connettiti per vedere stato, screen e file del server.')],
       s && status !== 'connecting' && !app.reconnect.has(id) && h('div', { class: 'panel-empty-actions' },
         h('button', { class: 'btn primary', onclick: () => connectAndOpen(id) }, err ? 'Riprova' : 'Connetti'),
-        err && h('button', { class: 'btn', onclick: () => editServer(s) }, 'Modifica server'))));
+        err && h('button', { class: 'btn', onclick: () => editServer(s) }, 'Modifica server'))), tools || '');
   }
   files.show(isOn(id) ? id : null);
   screens.refresh(true);
   refreshStats();
 }
+
+// ---------- "Mentre eri via": cosa è cambiato sul server dall'ultima visita ----------
+
+function changesCard(id) {
+  const c = app.changes.get(id);
+  if (!c) return null;
+  const ago = (() => {
+    const m = Math.round((Date.now() - c.since) / 60000);
+    if (m < 60) return `${m} minuti`;
+    if (m < 48 * 60) return `${Math.round(m / 60)} ore`;
+    return `${Math.round(m / 1440)} giorni`;
+  })();
+  const items = [];
+  if (c.rebooted) items.push(['power', 'Il server è stato riavviato']);
+  if (c.logins.length) items.push(['key', `${c.logins.length} access${c.logins.length === 1 ? 'o' : 'i'}`, c.logins.slice(0, 6).map((l) => l.split(/\s+/).slice(0, 3).join(' '))]);
+  if (c.packages.length) items.push(['download', `${c.packages.length} pacchett${c.packages.length === 1 ? 'o' : 'i'} installat${c.packages.length === 1 ? 'o' : 'i'} o aggiornat${c.packages.length === 1 ? 'o' : 'i'}`, [...new Set(c.packages.map((p) => p.name))].slice(0, 8)]);
+  if (c.etc.length) items.push(['file', `${c.etc.length} file di configurazione modificat${c.etc.length === 1 ? 'o' : 'i'}`, c.etc.slice(0, 8)]);
+  if (c.failed.length) items.push(['x', `${c.failed.length} serviz${c.failed.length === 1 ? 'io' : 'i'} in errore`, c.failed]);
+  if (Math.abs(c.diskDelta) > 100 * 1024 * 1024) items.push(['activity', `Disco: ${c.diskDelta > 0 ? '+' : '−'}${formatSize(Math.abs(c.diskDelta))}`]);
+  const dismiss = () => { app.changes.delete(id); updatePanel(); };
+  return h('div', { class: 'changes-card' },
+    h('div', { class: 'changes-head' }, h('strong', {}, `Mentre eri via (${ago})`), iconButton('x', 'Chiudi il riepilogo', dismiss)),
+    items.length
+      ? h('ul', {}, items.map(([ic, text, detail]) => h('li', {},
+        icon(ic, 14),
+        detail?.length ? h('details', {}, h('summary', {}, text), h('div', { class: 'changes-detail' }, detail.map((d) => h('code', {}, d)))) : h('span', {}, text))))
+      : h('p', { class: 'muted' }, 'Nessun cambiamento rilevante.'));
+}
+api.onChanges?.((id, c) => {
+  const interesting = c.rebooted || c.logins.length || c.packages.length || c.etc.length || c.failed.length;
+  if (!interesting) return;
+  app.changes.set(id, c);
+  if (app.current === id) updatePanel();
+  else toast(`Ci sono novità su "${serverName(id)}" da quando l'hai lasciato`, 'info', 4000);
+});
 
 function renderTunnels() {
   const list = app.tunnels.get(app.current) || [];
@@ -475,6 +563,14 @@ function formatUptime(sec) {
   const d = Math.floor(sec / 86400);
   const h2 = Math.floor((sec % 86400) / 3600);
   return d ? `${d}g ${h2}h` : `${h2}h ${Math.floor((sec % 3600) / 60)}m`;
+}
+
+// Traguardi di uptime: un piccolo riconoscimento per chi tiene il server acceso a lungo.
+const UPTIME_MILESTONES = [[1000, '1000 giorni senza riavvii'], [730, '2 anni senza riavvii'], [365, '1 anno senza riavvii'], [180, '6 mesi senza riavvii'], [100, '100 giorni senza riavvii']];
+function uptimeBadge(sec) {
+  const days = sec / 86400;
+  const m = UPTIME_MILESTONES.find(([d]) => days >= d);
+  return m ? h('span', { class: 'uptime-badge', title: 'Traguardo di uptime' }, icon('star', 12), m[1]) : null;
 }
 
 // Piccolo grafico degli ultimi minuti.
@@ -516,7 +612,7 @@ function renderStats() {
     statCard({ label: 'CPU', value: `${cpu}%`, sub: `${st.cpus} core, carico ${st.load.toFixed(2)}`, ratio: cpu, tone: 'accent', spark: hist.length > 1 && hist.map((x) => x.cpu) }),
     statCard({ label: 'Memoria', value: `${mem}%`, sub: `${formatSize(st.memUsed)} di ${formatSize(st.memTotal)}`, ratio: mem, tone: 'blue', spark: hist.length > 1 && hist.map((x) => x.mem) }),
     statCard({ label: 'Disco', value: `${pct(st.diskUsed, st.diskTotal)}%`, sub: `${formatSize(st.diskUsed)} di ${formatSize(st.diskTotal)}`, ratio: pct(st.diskUsed, st.diskTotal), tone: 'green' }),
-    statCard({ label: 'Attivo da', value: formatUptime(st.uptime), sub: st.hostname, tone: 'purple' }),
+    statCard({ label: 'Attivo da', value: formatUptime(st.uptime), sub: uptimeBadge(st.uptime) || st.hostname, tone: 'purple' }),
   );
 }
 
@@ -551,6 +647,13 @@ setInterval(async () => {
   const ids = [...app.conn.keys()].filter(isOn);
   await Promise.all(ids.map(fetchStats));
   homeTab.redraw();
+  // Aggiorna il battito senza ridisegnare l'elenco (non perde il focus né riavvia le animazioni).
+  for (const el of document.querySelectorAll('[data-id] .status-dot.beat, .server-card .status-dot.beat')) {
+    const id = el.closest('[data-id]')?.dataset.id || app.current;
+    const b = heartbeat(id);
+    el.style.setProperty('--beat', b.dur);
+    el.classList.toggle('hot', b.hot);
+  }
 }, 10000);
 
 // ---------- Aggiungi / modifica server ----------
@@ -576,6 +679,24 @@ async function editServer(server) {
     startPath: h('input', { type: 'text', value: server?.startPath || '', placeholder: 'cartella home', spellcheck: false }),
     tunnels: h('textarea', { class: 'textarea', rows: 3, spellcheck: false, placeholder: 'una riga per tunnel, es.\n8080:localhost:80\n5433:db.interno:5432' }),
   };
+  // Identità: colore e sigla, ripresi in barra laterale, schede e bordo del terminale.
+  let color = server?.color || '';
+  f.glyph = h('input', { type: 'text', value: server?.glyph || '', maxlength: 2, placeholder: glyphOf(server || { name: '' }), spellcheck: false, class: 'glyph-input', 'aria-label': 'Sigla (2 lettere)' });
+  f.production = h('input', { type: 'checkbox', checked: !!server?.production });
+  const swatches = h('div', { class: 'swatches', role: 'radiogroup', 'aria-label': 'Colore del server' });
+  const preview = h('span', { class: 'identity-preview' });
+  const syncIdentity = () => {
+    const tmp = { id: server?.id || f.name.value, name: f.name.value || f.host.value, color, glyph: f.glyph.value };
+    preview.replaceChildren(serverBadge(tmp, 'large'));
+    f.glyph.placeholder = glyphOf({ name: tmp.name });
+    swatches.replaceChildren(...SERVER_COLORS.map((c, i) => h('button', {
+      type: 'button', class: `swatch ${colorOf(tmp) === c ? 'active' : ''}`, role: 'radio', 'aria-checked': String(colorOf(tmp) === c), 'aria-label': `Colore ${i + 1}`,
+      style: { '--swatch': c }, onclick: () => { color = c; syncIdentity(); },
+    })));
+  };
+  f.name.addEventListener('input', syncIdentity);
+  f.glyph.addEventListener('input', syncIdentity);
+  syncIdentity();
   f.auth.value = server?.auth || 'key';
   f.jump.value = server?.jump || '';
   f.tunnels.value = (server?.tunnels || []).map((t) => `${t.localPort}:${t.remoteHost}:${t.remotePort}`).join('\n');
@@ -599,11 +720,15 @@ async function editServer(server) {
   const body = h('div', { class: 'form-grid' },
     h('div', { class: 'row' }, h('div', { class: 'grow' }, field('Nome', f.name)), h('div', { class: 'grow' }, field('Gruppo', f.group))),
     h('datalist', { id: 'server-groups' }, groups.map((g) => h('option', { value: g }))),
+    h('div', { class: 'identity-row' }, preview,
+      h('div', { class: 'field grow' }, h('span', {}, 'Colore'), swatches),
+      h('label', { class: 'field' }, h('span', {}, 'Sigla'), f.glyph)),
     h('div', { class: 'row' }, h('div', { class: 'grow' }, field('Host', f.host)), h('div', { class: 'port' }, field('Porta', f.port))),
     field('Utente', f.username),
     field('Autenticazione', f.auth),
     keyField,
     forwardField,
+    h('label', { class: 'check' }, f.production, h('span', {}, 'Server di produzione: chiedi conferma prima dei comandi pericolosi (rm -rf, reboot, DROP TABLE…)')),
     advanced,
     h('p', { class: 'hint' }, icon('shield', 14), 'La chiave resta sul tuo PC. Se è protetta da passphrase te la chiedo alla connessione e, se vuoi, la salvo cifrata con il sistema.'));
 
@@ -629,6 +754,9 @@ async function editServer(server) {
             jump: f.jump.value,
             startPath: f.startPath.value.trim(),
             tunnels: f.tunnels.value.split('\n').map((l) => l.trim()).filter(Boolean),
+            color,
+            glyph: f.glyph.value.trim(),
+            production: f.production.checked,
           };
           const missing = ['host', 'username'].filter((k) => !data[k]);
           for (const k of ['host', 'username']) f[k].setAttribute('aria-invalid', String(missing.includes(k)));
@@ -821,6 +949,7 @@ api.onConnClosed((id) => {
 
 let tabSeq = 0;
 let dragging = null;
+const TAB_ICONS = { editor: 'file', screen: 'layers', home: 'home', settings: 'settings', history: 'clock', recipes: 'snippet', timeline: 'clock', services: 'activity', notes: 'edit' };
 
 function addTab(tab, { background = false } = {}) {
   tab.uid = `tab${++tabSeq}`;
@@ -865,7 +994,7 @@ function addTab(tab, { background = false } = {}) {
     },
   },
   dot,
-  icon({ editor: 'file', screen: 'layers', home: 'home', settings: 'settings' }[tab.kind] || 'terminal', 14),
+  icon(TAB_ICONS[tab.kind] || 'terminal', 14),
   label,
   tab.kind !== 'home' && h('button', {
     class: 'tab-close',
@@ -875,6 +1004,12 @@ function addTab(tab, { background = false } = {}) {
     'aria-label': `Chiudi ${tab.title}`,
     onclick: (e) => { e.stopPropagation(); closeTab(tab.uid); },
   }, icon('x', 12)));
+  if (tab.serverId) {
+    const color = colorOf(serverOf(tab.serverId));
+    btn.classList.add('has-server');
+    btn.style.setProperty('--server-color', color);
+    tab.el.style.setProperty('--server-color', color);
+  }
   tab.btn = btn;
   tab.label = label;
   tab.setState = (s) => btn.classList.toggle('dead', s === 'off');
@@ -890,6 +1025,8 @@ function addTab(tab, { background = false } = {}) {
   return tab;
 }
 
+const PAGE_KINDS = new Set(['home', 'settings', 'history', 'recipes', 'timeline', 'services', 'notes']);
+
 function activate(uid) {
   const tab = app.tabs.find((t) => t.uid === uid);
   if (!tab) return;
@@ -902,7 +1039,11 @@ function activate(uid) {
   }
   tab.btn.classList.remove('activity');
   tab.btn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  tabArea.parentElement.classList.toggle('is-page', tab.kind === 'home' || tab.kind === 'settings');
+  tabArea.parentElement.classList.toggle('is-page', PAGE_KINDS.has(tab.kind));
+  // Il bordo dell'area terminale prende il colore del server della scheda attiva.
+  const sv = tab.serverId && (tab.kind === 'term' || tab.kind === 'screen') ? serverOf(tab.serverId) : null;
+  tabArea.parentElement.classList.toggle('server-tinted', !!sv);
+  if (sv) tabArea.parentElement.style.setProperty('--server-color', colorOf(sv));
   if (tab.serverId && tab.serverId !== app.current) selectServer(tab.serverId);
   updateTitle();
   tab.show();
@@ -1009,6 +1150,154 @@ async function openEditor(serverId, path, { background = false } = {}) {
   return addTab(tab, { background });
 }
 
+// ---------- Schede speciali: cronologia, ricette, storia, servizi, diario ----------
+
+function openSingle(find, make) {
+  const existing = app.tabs.find(find);
+  if (existing) { activate(existing.uid); return existing; }
+  return addTab(make());
+}
+
+let recipesTab = null;
+function openRecipes(steps) {
+  const tab = openSingle((t) => t.kind === 'recipes', () => {
+    recipesTab = createRecipesTab({
+      settings: app.settings,
+      change: changeSettings,
+      servers: () => app.servers,
+      serverOf,
+      current: () => app.current,
+      connect: (id) => connect(id, { quiet: true }).catch(() => false),
+      onCommand: (id, cmd) => api.invoke('data:addHistory', id, cmd).catch(() => {}),
+    });
+    const dispose = recipesTab.dispose;
+    recipesTab.dispose = () => { dispose(); recipesTab = null; };
+    return recipesTab;
+  });
+  if (steps) tab.newFrom(steps);
+  return tab;
+}
+
+// Scrive un comando nel terminale del server (aprendone uno se serve), con o senza Invio.
+async function sendToServer(serverId, cmd, run) {
+  if (!(await connect(serverId))) return;
+  let t = app.tabs.find((x) => x.serverId === serverId && x.kind === 'term' && x.uid === app.active)
+    || app.tabs.find((x) => x.serverId === serverId && x.kind === 'term');
+  if (!t) {
+    t = await openTerminal(serverId);
+    await new Promise((r) => setTimeout(r, 900)); // tempo per far comparire il prompt
+  } else activate(t.uid);
+  if (!t) return;
+  // Più righe: le esegue una alla volta come se le scrivessi.
+  const text = cmd.replace(/\r?\n/g, '\r');
+  if (run) await t.send(`${text}\r`);
+  else await t.send(text);
+}
+
+function openHistory() {
+  return openSingle((t) => t.kind === 'history', () => createHistoryTab({
+    servers: () => app.servers,
+    serverOf,
+    run: (id, cmd) => sendToServer(id, cmd, true),
+    insert: (id, cmd) => sendToServer(id, cmd, false),
+    newRecipe: (steps) => openRecipes(steps),
+  }));
+}
+
+function openTimeline(id) {
+  return openSingle((t) => t.kind === 'timeline' && t.serverId === id, () => createTimelineTab(id, {
+    serverOf,
+    openTerminal: (sid, command) => openTerminal(sid, { command }),
+  }));
+}
+
+function openServices(id) {
+  return openSingle((t) => t.kind === 'services' && t.serverId === id, () => createServicesTab(id, {
+    serverOf,
+    isOn,
+    openTerminal: (sid, command) => openTerminal(sid, { command }),
+  }));
+}
+
+function openNotes(id) {
+  return openSingle((t) => t.kind === 'notes' && t.serverId === id, () => createNotesTab(id, {
+    serverOf,
+    run: (sid, cmd) => sendToServer(sid, cmd, true),
+  }));
+}
+
+// ---------- Trascina e pubblica: una cartella dal desktop su un server ----------
+
+async function publishDialog(serverId, paths) {
+  const s = serverOf(serverId);
+  if (!s) return;
+  const base = (paths.length === 1 ? paths[0].split(/[\\/]/).pop() : '') || '';
+  const dirInput = h('input', { type: 'text', class: 'mono', spellcheck: false, value: files.currentDir?.(serverId) || s.startPath || `/home/${s.username}`, 'aria-label': 'Cartella sul server' });
+  const reload = h('input', { type: 'checkbox' });
+  const names = paths.map((p) => p.split(/[\\/]/).pop());
+  const r = await modal({
+    title: `Pubblica su ${s.name}`,
+    body: h('div', { class: 'form-grid' },
+      h('div', { class: 'publish-files' }, serverBadge(s), h('div', {}, h('strong', {}, names.length === 1 ? base : `${names.length} elementi`), h('span', { class: 'muted' }, names.slice(0, 4).join(', ') + (names.length > 4 ? '…' : '')))),
+      h('label', { class: 'field' }, h('span', {}, 'Cartella di destinazione sul server'), dirInput, h('small', {}, 'File e cartelle vengono copiati dentro questa cartella; quelli con lo stesso nome vengono sovrascritti.')),
+      h('label', { class: 'check' }, reload, h('span', {}, 'Dopo il caricamento ricarica nginx (controlla prima la configurazione)')),
+      s.production && h('p', { class: 'hint warn' }, icon('shield', 14), 'È un server di produzione: controlla bene la cartella.')),
+    actions: [{ label: 'Annulla', result: null }, { label: 'Pubblica', kind: 'primary', value: () => dirInput.value.trim() || undefined }],
+  });
+  if (!r) return;
+  if (!(await connect(serverId))) return;
+  try {
+    await api.invoke('sftp:mkdir', serverId, r).catch(() => {});
+    await api.invoke('sftp:upload', serverId, paths, r);
+    toast(`Pubblicato in ${r}`, 'ok');
+    if (reload.checked) {
+      const out = await api.invoke('recipe:step', serverId, `pub${Date.now()}`, 'if [ "$(id -u)" = 0 ]; then nginx -t && (systemctl reload nginx || nginx -s reload); else sudo -n nginx -t && (sudo -n systemctl reload nginx || sudo -n nginx -s reload); fi', '');
+      if (out.code === 0) toast('nginx ricaricato', 'ok');
+      else toast(`nginx non ricaricato: ${out.out.split('\n').pop() || 'serve sudo senza password'}`, 'error', 7000);
+    }
+    if (app.current === serverId) files.refresh();
+  } catch (e) { fail(e); }
+}
+
+// ---------- Condivisione in rete locale ----------
+
+async function shareDialog(tab) {
+  const p = tab.activePane;
+  if (!p?.alive) { toast('La sessione non è attiva', 'warn'); return; }
+  let info = app.shares.get(p.id);
+  if (!info) {
+    try {
+      const r = await api.invoke('share:start', p.id, { cols: p.cols, rows: p.rows, title: `${serverName(tab.serverId)} · ${tab.termTitle || tab.title}` });
+      info = { url: r.url, viewers: 0, allowInput: false };
+      app.shares.set(p.id, info);
+      tab.btn.classList.add('shared');
+    } catch (e) { fail(e); return; }
+  }
+  const viewers = h('span', { class: 'muted' });
+  const syncViewers = () => { viewers.textContent = info.viewers ? `${info.viewers} person${info.viewers === 1 ? 'a sta' : 'e stanno'} guardando` : 'Ancora nessuno sta guardando'; };
+  syncViewers();
+  const off = api.onShare?.((e) => { if (e.termId === p.id) { info.viewers = e.viewers; syncViewers(); } });
+  const allow = h('input', { type: 'checkbox', checked: info.allowInput, onchange: (e) => { info.allowInput = e.target.checked; api.invoke('share:setInput', p.id, info.allowInput); } });
+  const link = h('input', { type: 'text', class: 'mono', readonly: true, value: info.url, 'aria-label': 'Link della sessione', onfocus: (e) => e.target.select() });
+  const r = await modal({
+    title: 'Condividi questo terminale',
+    body: h('div', { class: 'form-grid' },
+      h('p', {}, 'Chi è sulla tua stessa rete (stesso Wi-Fi o ufficio) può aprire questo link nel browser e vedere il terminale in diretta.'),
+      h('div', { class: 'row' }, link, h('button', { class: 'btn', onclick: () => { navigator.clipboard.writeText(info.url); toast('Link copiato', 'ok', 1500); } }, 'Copia')),
+      viewers,
+      h('label', { class: 'check' }, allow, h('span', {}, 'Permetti di scrivere nel terminale')),
+      h('p', { class: 'hint' }, icon('shield', 14), 'Il link contiene un codice casuale e smette di funzionare quando interrompi o chiudi il terminale. Windows potrebbe chiederti di consentire Screenie nel firewall.')),
+    actions: [{ label: 'Interrompi condivisione', kind: 'danger-ghost', result: 'stop' }, { label: 'Chiudi', kind: 'primary', result: null }],
+  });
+  off?.();
+  if (r === 'stop') {
+    await api.invoke('share:stop', p.id).catch(() => {});
+    app.shares.delete(p.id);
+    tab.btn.classList.remove('shared');
+    toast('Condivisione interrotta', 'ok', 2000);
+  }
+}
+
 // ---------- Sessione: riapre le schede all'avvio ----------
 
 let sessionTimer = null;
@@ -1017,7 +1306,7 @@ function saveSession() {
   if (restoring) return;
   clearTimeout(sessionTimer);
   sessionTimer = setTimeout(() => {
-    const session = app.tabs.filter((t) => t.serverId).map((t) => ({
+    const session = app.tabs.filter((t) => t.serverId && ['term', 'screen', 'editor'].includes(t.kind)).map((t) => ({
       ...(t.kind === 'editor' ? { kind: 'editor', serverId: t.serverId, path: t.path } : t.sessionInfo?.() || { kind: t.kind, serverId: t.serverId }),
       active: t.uid === app.active,
     }));
@@ -1191,6 +1480,15 @@ const commands = {
   fontBigger: () => fontStep(1),
   fontSmaller: () => fontStep(-1),
   fontReset: () => fontStep(0),
+  recipes: () => openRecipes(),
+  history: () => openHistory(),
+  // Modalità focus: resta solo il terminale, con il bordo nel colore del server.
+  focus: () => {
+    const on = !document.body.classList.contains('focus-mode');
+    document.body.classList.toggle('focus-mode', on);
+    if (on) toast(`Modalità focus: ${keyHint('focus') || 'lo stesso tasto'} o il pulsante in basso per uscire`, 'info', 2500);
+    requestAnimationFrame(() => activeTab()?.show?.());
+  },
 };
 
 async function paletteItems() {
@@ -1224,6 +1522,18 @@ async function paletteItems() {
   cmd('Dividi il terminale a destra', 'splitRight', 'splitRight');
   cmd('Dividi il terminale sotto', 'splitDown', 'splitDown');
   cmd(isBroadcasting() ? 'Interrompi la scrittura in tutti i terminali' : 'Scrivi in tutti i terminali', 'broadcast', 'broadcast');
+  cmd('Ricette', 'recipes', 'snippet');
+  cmd('Cronologia comandi', 'history', 'clock');
+  cmd(document.body.classList.contains('focus-mode') ? 'Esci dalla modalità focus' : 'Modalità focus (solo il terminale)', 'focus', 'eye');
+  if (app.current) {
+    const n = serverName(app.current);
+    items.push({ group: 'Azioni', icon: 'clock', label: `Macchina del tempo di ${n}`, run: () => openTimeline(app.current) });
+    items.push({ group: 'Azioni', icon: 'edit', label: `Diario di ${n}`, run: () => openNotes(app.current) });
+    if (isOn(app.current)) items.push({ group: 'Azioni', icon: 'activity', label: `Mappa dei servizi di ${n}`, run: () => openServices(app.current) });
+  }
+  for (const r of app.settings.recipes || []) {
+    items.push({ group: 'Ricette', icon: 'snippet', label: r.name, detail: r.steps.join(' · '), run: () => { const t = openRecipes(); t.select?.(r.id); } });
+  }
   cmd('Aggiungi server', 'addServer', 'plus');
   cmd('Importa server da ~/.ssh/config', 'importSshConfig', 'import');
   cmd('Mostra/nascondi barra laterale', 'toggleSidebar', 'sidebarLeft');

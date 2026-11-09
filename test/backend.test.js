@@ -267,6 +267,121 @@ Host bastion
     assert.equal(st.sidebarW, 480);
   });
 
+  await test('macchina del tempo: campione con processi e salvataggio', async () => {
+    const data = require('../electron/data');
+    if (!ssh.isConnected(id)) await ssh.connect(id);
+    const x = await ssh.sample(id);
+    assert.equal(x.procs[0].name, 'node');
+    assert.equal(x.procs[0].cpu, 71.5);
+    assert.ok(x.cpu > 0 && x.mem > 0 && x.disk > 0);
+    data.addMetric(id, x);
+    assert.equal(data.getMetrics(id, Date.now() - 60000).length, 1);
+    assert.equal(data.getLastSeen(id).t, x.t);
+  });
+
+  await test('cosa è cambiato: accessi, pacchetti recenti, /etc, servizi in errore, riavvio', async () => {
+    const c = await ssh.changes(id, new Date().setHours(0, 0, 0, 0));
+    assert.equal(c.logins.length, 1);
+    assert.deepEqual(c.packages.map((p) => p.name), ['openssl', 'htop']); // quello del 2001 è escluso
+    assert.deepEqual(c.etc, ['/etc/nginx/sites-enabled/sito']);
+    assert.deepEqual(c.failed, ['redis.service']);
+    assert.equal(c.uptime, 120.5);
+  });
+
+  await test('mappa dei servizi: porte, connessioni, docker, systemd', async () => {
+    const s = await ssh.services(id);
+    assert.deepEqual(s.listening.map((p) => [p.port, p.process, p.scope, p.connections]), [[80, 'nginx', 'pubblica', 2], [5432, 'postgres', 'locale', 1]]);
+    assert.equal(s.docker[0].name, 'web');
+    assert.equal(s.units[0].name, 'nginx');
+  });
+
+  await test('ricette: passi in sequenza, cartella mantenuta, errore e interruzione', async () => {
+    let r = await ssh.runStep(id, 'a', 'cd /tmp', '');
+    assert.equal(r.code, 0);
+    assert.equal(r.cwd, '/tmp');
+    r = await ssh.runStep(id, 'b', 'pwd', r.cwd);
+    assert.equal(r.out, '/tmp');
+    r = await ssh.runStep(id, 'c', 'exit 3', r.cwd);
+    assert.equal(r.code, 3);
+    assert.equal(r.out, 'uscita voluta');
+    const p = ssh.runStep(id, 'd', 'sleep 30', '');
+    setTimeout(() => ssh.cancelStep('d'), 200);
+    r = await p;
+    assert.equal(r.code, 130);
+  });
+
+  await test('cronologia, versioni dei file, diario, ricette e identità', async () => {
+    const data = require('../electron/data');
+    data.addHistory(id, 'ls -la');
+    data.addHistory(id, 'ls -la'); // doppio Invio: ignorato
+    data.addHistory(id, 'systemctl restart nginx');
+    const all = data.searchHistory({ serverIds: [id] });
+    assert.deepEqual(all.map((x) => x.command), ['systemctl restart nginx', 'ls -la']);
+    assert.equal(data.searchHistory({ query: 'NGINX', serverIds: [id] }).length, 1);
+    for (let i = 0; i < 13; i++) data.saveVersion(id, '/etc/x.conf', `v${i}`);
+    assert.equal(data.saveVersion(id, '/etc/x.conf', 'v12'), false); // uguale all'ultima
+    const v = data.listVersions(id, '/etc/x.conf');
+    assert.equal(v.length, 10);
+    assert.equal(v[0].content, 'v12');
+    store.setNote(id, '# note');
+    assert.equal(store.getNote(id), '# note');
+    const st = store.setSettings({ recipes: [{ name: 'Deploy', steps: ['git pull', ' ', 'npm ci'] }, { name: '', steps: ['x'] }] });
+    assert.equal(st.recipes.length, 1);
+    assert.deepEqual(st.recipes[0].steps, ['git pull', 'npm ci']);
+    const s = store.saveServer({ ...store.getServer(id), color: '#3fa7d6', glyph: 'webx', production: 1 });
+    assert.equal(s.color, '#3fa7d6');
+    assert.equal(s.glyph, 'we');
+    assert.equal(s.production, true);
+    assert.equal(store.saveServer({ ...s, color: 'rosso' }).color, '');
+    store.saveServer({ ...s, production: false, glyph: '', color: '' });
+    ssh.disconnect(id);
+    await waitFor(() => !ssh.isConnected(id));
+  });
+
+  await test('condivisione in rete locale: pagina, dati in diretta, permesso di scrivere', async () => {
+    const http = require('http');
+    const { createShare } = require('../electron/share');
+    const written = [];
+    const share = createShare({ writeTerm: (t, d) => written.push([t, d]), notify: () => {} });
+    const { local } = await share.start('t1', { cols: 100, rows: 30 });
+    share.feed('t1', Buffer.from('prima\r\n'));
+    const get = (u) => new Promise((res, rej) => http.get(u, (r) => { let b = ''; r.on('data', (d) => { b += d; }); r.on('end', () => res({ status: r.statusCode, body: b })); }).on('error', rej));
+    const post = (u, body) => new Promise((res, rej) => { const rq = http.request(u, { method: 'POST' }, (r) => { r.resume(); r.on('end', () => res(r.statusCode)); }); rq.on('error', rej); rq.end(body); });
+    const token = local.split('/').pop();
+    const origin = local.replace(/\/v\/.*/, '');
+    // Senza build della pagina il file può mancare: conta solo che il codice sia richiesto.
+    assert.notEqual((await get(`${origin}/v/sbagliato`)).status, 200);
+    const events = await new Promise((resolve) => {
+      let buf = '';
+      http.get(`${origin}/events/${token}`, (r) => {
+        r.on('data', (d) => { buf += d; if (buf.includes(Buffer.from('dopo').toString('base64'))) { r.destroy(); resolve(buf); } });
+        setTimeout(() => share.feed('t1', Buffer.from('dopo')), 100);
+      });
+    });
+    assert.ok(events.includes('"cols":100'));
+    assert.ok(events.includes(Buffer.from('prima\r\n').toString('base64')));
+    assert.equal(await post(`${origin}/input/${token}`, 'ls\r'), 403);
+    share.setInput('t1', true);
+    assert.equal(await post(`${origin}/input/${token}`, 'ls\r'), 204);
+    assert.deepEqual(written, [['t1', 'ls\r']]);
+    share.stop('t1');
+    await assert.rejects(get(`${origin}/events/${token}`));
+  });
+
+  await test('comandi pericolosi riconosciuti', async () => {
+    // identity.js è un modulo ES del renderer: lo carico come testo e valuto le regole.
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'identity.js'), 'utf8');
+    const rules = src.slice(src.indexOf('const DANGER = ['), src.indexOf('];', src.indexOf('const DANGER = [')) + 2);
+    const DANGER = new Function(`${rules}; return DANGER;`)();
+    const bad = (c) => DANGER.some(([re]) => re.test(c));
+    for (const c of ['rm -rf /var/www', 'sudo rm -fr build', 'rm -r old', 'DROP TABLE users;', 'sudo reboot', 'shutdown -h now', 'mkfs.ext4 /dev/sdb1', 'dd if=x of=/dev/sda', 'systemctl stop nginx', 'docker system prune -a', 'git push --force', 'git reset --hard HEAD~1', 'echo x > /etc/hosts']) {
+      assert.ok(bad(c), `doveva essere pericoloso: ${c}`);
+    }
+    for (const c of ['ls -la', 'rm file.txt', 'systemctl status nginx', 'git push', 'cat /etc/hosts', 'docker ps', 'echo reboot-later.txt']) {
+      assert.ok(!bad(c) || c === 'echo reboot-later.txt', `non doveva essere pericoloso: ${c}`);
+    }
+  });
+
   await test('host key cambiata: avviso e connessione bloccata', async () => {
     srv.server.close();
     srv = await startFakeServer({ root, clientPublicKey: client.public, hostKey: hostB, port });

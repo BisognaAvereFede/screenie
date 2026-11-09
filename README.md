@@ -60,6 +60,18 @@ Il generatore dell'installer (NSIS) non funziona con percorsi più lunghi di cir
 - **Scorciatoie**: tutte modificabili in Impostazioni → Scorciatoie; `F1` mostra l'elenco.
 - **Backup**: Impostazioni → Backup esporta e importa server, preferiti e impostazioni (senza passphrase).
 - **Area di notifica**: l'icona di Screenie apre al volo un terminale su un server salvato.
+- **Identità e battito**: ogni server ha un colore e una sigla, ripresi nella barra laterale, nelle schede e nel bordo del terminale. Il pallino pulsa più veloce quando il server è sotto sforzo. Piccoli traguardi a 100 giorni, 6 mesi e 1 anno di uptime.
+- **Server di produzione**: se lo segni come tale, comandi come `rm -rf`, `reboot` o `DROP TABLE` chiedono conferma prima di partire.
+- **Cronologia comandi** (`Ctrl+Shift+H`): i comandi dei terminali, server per server e cercabili tra tutti, da rieseguire o trasformare in ricetta.
+- **Ricette** (`Ctrl+Shift+R`): sequenze di comandi con parametri `{nome}`, lanciabili su più server insieme, con l'esito di ogni passo.
+- **Macchina del tempo**: CPU, memoria, disco e processi registrati una volta al minuto (mentre Screenie è aperto e connesso), fino a 7 giorni, con i log di quel momento.
+- **Mentre eri via**: alla connessione, accessi, pacchetti, file di `/etc` modificati, servizi in errore e riavvii dall'ultima visita.
+- **Mappa dei servizi**: porte aperte verso l'esterno e solo locali, con il processo e le connessioni attive, container Docker e servizi systemd, con i loro log.
+- **Diario**: note in markdown per ogni server; i comandi scritti dopo `$ ` o tra ``` diventano pulsanti da eseguire.
+- **Pubblica trascinando**: trascina file o cartelle dal desktop su un server nella barra laterale, scegli la cartella e, se vuoi, ricarica nginx.
+- **Versioni e differenze**: l'editor tiene le ultime 10 versioni di ogni file salvato; per i file di configurazione mostra le differenze prima di salvare.
+- **Condividi in rete locale**: un link per far vedere un terminale in diretta, nel browser, a chi è sulla tua stessa rete (sola lettura o con il permesso di scrivere).
+- **Modalità focus** (`Ctrl+Shift+Invio`): resta solo il terminale.
 
 ## Sicurezza
 

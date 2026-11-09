@@ -3,6 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const store = require('./store');
 const { createManager } = require('./ssh');
+const data = require('./data');
+const { createShare } = require('./share');
 const { readSshConfig } = require('./sshconfig');
 const { autoUpdater } = require('electron-updater');
 
@@ -41,7 +43,10 @@ let win = null;
 const pending = new Map(); // id richiesta -> resolve
 let promptSeq = 0;
 
+let share = null; // sessioni condivise in rete locale
 function send(channel, ...args) {
+  if (channel === 'term:data') share?.feed(args[0], args[1]);
+  else if (channel === 'term:exit') share?.stop(args[0]);
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
 }
 
@@ -55,6 +60,33 @@ function prompt(request) {
 }
 
 const ssh = createManager({ send, prompt });
+share = createShare({
+  writeTerm: (termId, d) => ssh.writeTerm(termId, d),
+  notify: (termId, viewers) => send('share', { termId, viewers }),
+});
+
+// ---------- Macchina del tempo: un campione al minuto per ogni server connesso ----------
+const sampling = new Set();
+async function sampleAll() {
+  for (const s of store.listServers()) {
+    if (!ssh.isConnected(s.id) || sampling.has(s.id)) continue;
+    sampling.add(s.id);
+    ssh.sample(s.id).then((x) => data.addMetric(s.id, x)).catch(() => {}).finally(() => sampling.delete(s.id));
+  }
+}
+setInterval(sampleAll, 60 * 1000);
+
+// "Cosa è cambiato?": alla connessione, se il server non si vede da almeno 15 minuti.
+async function checkChanges(id) {
+  const last = data.getLastSeen(id);
+  const now = Date.now();
+  if (!last?.t || now - last.t < 15 * 60 * 1000) return;
+  try {
+    const c = await ssh.changes(id, last.t);
+    const rebooted = c.uptime > 0 && c.uptime * 1000 < now - last.t;
+    send('changes', id, { ...c, since: last.t, rebooted, diskDelta: last.diskUsed ? c.diskUsed - last.diskUsed : 0 });
+  } catch { /* server senza i comandi necessari: niente riepilogo */ }
+}
 
 // Finestra di avvio: logo grande con animazione e suono, poi lascia il posto all'app.
 let splash = null;
@@ -159,7 +191,9 @@ handle('prompt:answer', (id, value) => {
 
 handle('servers:list', () => store.listServers());
 handle('servers:save', (s) => { const r = store.saveServer(s); updateTray(); return r; });
-handle('servers:delete', (id) => { ssh.disconnect(id); store.deleteServer(id); updateTray(); });
+handle('servers:delete', (id) => { ssh.disconnect(id); store.deleteServer(id); data.forgetServer(id); updateTray(); });
+handle('servers:getNote', (id) => store.getNote(id));
+handle('servers:setNote', (id, text) => store.setNote(id, text));
 handle('servers:readSshConfig', () => readSshConfig());
 handle('servers:forgetPassphrase', (id) => store.forgetPassphrase(id));
 handle('servers:defaultKey', () => ssh.defaultKeyPath());
@@ -234,7 +268,11 @@ handle('window:appearance', ({ theme, zoom }) => {
   return effectiveTheme(theme);
 });
 
-handle('ssh:connect', (id) => ssh.connect(id));
+handle('ssh:connect', async (id) => {
+  const r = await ssh.connect(id);
+  checkChanges(id).finally(() => ssh.sample(id).then((x) => data.addMetric(id, x)).catch(() => {}));
+  return r;
+});
 handle('ssh:ping', (id) => ssh.ping(id));
 handle('ssh:tunnels', (id) => ssh.tunnels(id));
 handle('ssh:disconnect', (id) => { ssh.stopWatchers(id); ssh.disconnect(id); });
@@ -242,7 +280,7 @@ handle('ssh:disconnect', (id) => { ssh.stopWatchers(id); ssh.disconnect(id); });
 handle('term:open', (serverId, termId, opts) => ssh.openTerm(serverId, termId, opts));
 handle('term:close', (termId) => ssh.closeTerm(termId));
 ipcMain.on('term:write', (_e, termId, data) => ssh.writeTerm(termId, data));
-ipcMain.on('term:resize', (_e, termId, cols, rows) => ssh.resizeTerm(termId, cols, rows));
+ipcMain.on('term:resize', (_e, termId, cols, rows) => { ssh.resizeTerm(termId, cols, rows); share.resize(termId, cols, rows); });
 
 handle('screen:list', (id) => ssh.screenList(id));
 handle('screen:create', (id, name, cmd) => ssh.screenCreate(id, name, cmd));
@@ -251,6 +289,18 @@ handle('screen:rename', (id, sid, name) => ssh.screenRename(id, sid, name));
 handle('screen:wipe', (id) => ssh.screenWipe(id));
 handle('screen:attachCommand', (sid) => ssh.screenAttachCommand(sid));
 handle('server:stats', (id) => ssh.stats(id));
+handle('server:services', (id) => ssh.services(id));
+handle('data:addHistory', (id, cmd) => data.addHistory(id, cmd));
+handle('data:searchHistory', (opts) => data.searchHistory({ ...opts, serverIds: store.listServers().map((s) => s.id) }));
+handle('data:clearHistory', (id) => data.clearHistory(id));
+handle('data:metrics', (id, sinceMs) => data.getMetrics(id, sinceMs));
+handle('data:saveVersion', (id, p, content) => data.saveVersion(id, p, content));
+handle('data:versions', (id, p) => data.listVersions(id, p));
+handle('recipe:step', (id, runId, cmd, cwd) => ssh.runStep(id, runId, cmd, cwd));
+handle('recipe:cancel', (runId) => ssh.cancelStep(runId));
+handle('share:start', (termId, opts) => share.start(termId, opts));
+handle('share:stop', (termId) => share.stop(termId));
+handle('share:setInput', (termId, allow) => share.setInput(termId, allow));
 
 handle('sftp:list', (id, dir) => ssh.list(id, dir));
 handle('sftp:read', (id, file) => ssh.readFile(id, file));
@@ -419,6 +469,8 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  share.stopAll();
+  data.flush();
   ssh.shutdown();
   if (process.platform !== 'darwin') app.quit();
 });

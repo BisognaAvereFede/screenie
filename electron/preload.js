@@ -17,7 +17,7 @@ const on = (channel) => (cb) => {
 contextBridge.exposeInMainWorld('api', {
   platform: process.platform,
   invoke: (channel, ...args) => {
-    if (!/^(servers|server|settings|window|dialog|shell|ssh|term|screen|sftp|prompt|config|app):/.test(channel)) {
+    if (!/^(servers|server|settings|window|dialog|shell|ssh|term|screen|sftp|prompt|config|app|data|recipe|share):/.test(channel)) {
       return Promise.reject(new Error('Canale non consentito'));
     }
     return call(channel, ...args);
@@ -34,4 +34,6 @@ contextBridge.exposeInMainWorld('api', {
   onMenu: on('menu'),
   onTunnels: on('tunnels'),
   onUpdate: on('update'),
+  onShare: on('share'),
+  onChanges: on('changes'),
 });

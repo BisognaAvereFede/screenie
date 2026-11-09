@@ -50,6 +50,51 @@ function startFakeServer({ root, clientPublicKey, hostKey, port = 0 }) {
       return end(0);
     }
     if (cmd.startsWith('screen -wipe')) return end(0);
+    // Processi più pesanti (macchina del tempo).
+    if (cmd.startsWith('ps -eo comm=')) {
+      out('node            71.5 624000\npostgres        19.0 1200000\nnginx            4.0 38000\n');
+      return end(0);
+    }
+    // "Cosa è cambiato?"
+    if (cmd.includes('__SCREENIE_LOGIN__')) {
+      const now = new Date();
+      const d = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      out(['__SCREENIE_LOGIN__', 'mario    pts/0        10.0.0.9         Mon Nov  9 03:10   still logged in',
+        '__SCREENIE_PKG__', `2001-01-01 10:00:00 upgrade vecchio:amd64 1 2`, `${d} 00:00:01 upgrade openssl:amd64 3.0.1 3.0.2`, `${d} 00:00:02 install htop:amd64 <none> 3.2`,
+        '__SCREENIE_ETC__', '/etc/nginx/sites-enabled/sito',
+        '__SCREENIE_FAILED__', 'redis.service loaded failed failed Redis',
+        '__SCREENIE_UPTIME__', '120.5 300.1',
+        '__SCREENIE_DISK__', '31876546560', '__SCREENIE_END__', ''].join('\n'));
+      return end(0);
+    }
+    // Mappa dei servizi.
+    if (cmd.includes('__SCREENIE_LISTEN__')) {
+      out(['__SCREENIE_LISTEN__',
+        'LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:(("nginx",pid=1,fd=6))',
+        'LISTEN 0 511 [::]:80 [::]:* users:(("nginx",pid=1,fd=7))',
+        'LISTEN 0 244 127.0.0.1:5432 0.0.0.0:* users:(("postgres",pid=2,fd=5))',
+        '__SCREENIE_EST__', '10.0.0.5:80', '10.0.0.5:80', '127.0.0.1:5432',
+        '__SCREENIE_DOCKER__', 'web\tnginx:alpine\t0.0.0.0:8080->80/tcp\tUp 2 hours',
+        '__SCREENIE_UNITS__', 'nginx.service loaded active running A high performance web server',
+        '__SCREENIE_END__', ''].join('\n'));
+      return end(0);
+    }
+    // Ricette: bash -lc '<script>' con la cartella di lavoro restituita alla fine.
+    if ((m = cmd.match(/^bash -lc ('(?:[^']|'\\'')*')$/s))) {
+      const script = unq(m[1]);
+      const cdm = script.match(/^cd '([^']*)'/);
+      let cwd = cdm ? cdm[1] : HOME;
+      const body = script.replace(/^cd '[^']*' 2>\/dev\/null; /, '').split('\n')[0];
+      let code = 0;
+      if ((m = body.match(/^cd (\S+)$/))) cwd = path.posix.resolve(cwd, m[1]);
+      else if (body === 'pwd') out(`${cwd}\n`);
+      else if ((m = body.match(/^echo (.*)$/))) out(`${m[1]}\n`);
+      else if ((m = body.match(/^exit (\d+)$/))) { out('uscita voluta\n'); code = Number(m[1]); }
+      else if (body === 'sleep 30') { stream.on('signal', () => end(130)); return; }
+      else { out(`comando sconosciuto: ${body}\n`); code = 127; }
+      out(`\n__SCREENIE_PWD__${cwd}\n`);
+      return end(code);
+    }
     if (cmd.startsWith('cat /proc/loadavg')) {
       out('0.84 0.61 0.52 2/311 4242\n4\n8233017344 5164826624\n84278861824 31876546560\n361234.12 1200000.00\nfake-vps\n');
       return end(0);

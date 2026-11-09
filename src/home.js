@@ -1,6 +1,7 @@
 // Pagina "Home": i server salvati, con stato e azioni, e le cartelle preferite.
 import { h, icon, formatSize } from './dom.js';
 import logoUrl from './logo-mark.svg';
+import { serverBadge, colorOf } from './identity.js';
 
 const api = window.api;
 
@@ -70,16 +71,21 @@ export function createHomePage(ctx) {
     const ms = on ? ctx.latency(s.id) : null;
     const count = screens.get(s.id) || 0;
     const addr = `${s.username}@${s.host}${s.port && s.port !== 22 ? `:${s.port}` : ''}`;
-    return h('article', { class: `card server-tile ${status} ${err ? 'has-error' : ''}` },
+    const cpu = on && st ? pct(st.load, st.cpus) : 0;
+    const days = on && st ? st.uptime / 86400 : 0;
+    return h('article', { class: `card server-tile ${status} ${err ? 'has-error' : ''}`, style: { '--server-color': colorOf(s) } },
       h('div', { class: 'tile-head' },
-        h('span', { class: `tile-avatar ${status}` }, icon('server', 20)),
+        h('span', { class: 'server-avatar large' }, serverBadge(s, 'large'),
+          h('span', { class: `status-dot beat ${status} ${cpu >= 85 ? 'hot' : ''}`, style: { '--beat': `${(2.6 - Math.min(100, cpu) / 100 * 2).toFixed(2)}s` } })),
         h('div', { class: 'tile-title' },
           h('h3', { class: 'tile-name' }, s.name),
           h('div', { class: 'tile-sub' }, addr)),
         on && h('button', { class: 'icon-btn', type: 'button', title: 'Disconnetti', 'aria-label': `Disconnetti ${s.name}`, onclick: () => ctx.disconnect(s.id) }, icon('logout', 16))),
       h('div', { class: 'tile-meta' },
         h('span', { class: `badge ${status}` }, h('span', { class: 'badge-dot' }), statusLabel(status)),
+        s.production && h('span', { class: 'prod-chip' }, 'produzione'),
         s.group && h('span', { class: 'tile-group' }, s.group),
+        days >= 100 && h('span', { class: 'uptime-badge' }, icon('star', 12), days >= 365 ? `${Math.floor(days / 365)} ann${days >= 730 ? 'i' : 'o'} accesi` : `${Math.floor(days)} giorni accesi`),
         ms != null && h('span', { class: 'tile-latency', title: 'Latenza' }, `${ms} ms`)),
       err && h('p', { class: 'tile-error', role: 'alert' }, err),
       on && st && h('div', { class: 'tags' },

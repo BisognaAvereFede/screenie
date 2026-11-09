@@ -417,6 +417,131 @@ function createManager({ send, prompt }) {
     };
   }
 
+  // Campione per la macchina del tempo: stato + i processi che consumano di più.
+  async function sample(serverId) {
+    const st = await stats(serverId);
+    const { stdout } = await exec(serverId, 'ps -eo comm=,pcpu=,rss= --sort=-pcpu 2>/dev/null | head -6');
+    const procs = stdout.trim().split('\n').filter(Boolean).map((l) => {
+      const m = l.trim().match(/^(.*?)\s+([\d.]+)\s+(\d+)$/);
+      return m ? { name: m[1].slice(0, 40), cpu: Number(m[2]), rss: Number(m[3]) * 1024 } : null;
+    }).filter(Boolean).slice(0, 5);
+    return {
+      t: Date.now(),
+      cpu: Math.min(100, Math.round((st.load / st.cpus) * 100)),
+      mem: st.memTotal ? Math.round((st.memUsed / st.memTotal) * 100) : 0,
+      disk: st.diskTotal ? Math.round((st.diskUsed / st.diskTotal) * 100) : 0,
+      diskUsed: st.diskUsed,
+      uptime: st.uptime,
+      procs,
+    };
+  }
+
+  // "Cosa è cambiato?": accessi, pacchetti, file di configurazione e servizi dall'ultima visita.
+  async function changes(serverId, sinceMs) {
+    const since = Math.floor(sinceMs / 1000);
+    const sep = (n) => `echo __SCREENIE_${n}__`;
+    const { stdout } = await exec(serverId, [
+      sep('LOGIN'), `last -w -s "$(date -d @${since} '+%Y-%m-%d %H:%M:%S' 2>/dev/null)" 2>/dev/null | grep -v '^$' | grep -v '^wtmp' | grep -v '^reboot' | head -20`,
+      sep('PKG'), `cat /var/log/dpkg.log 2>/dev/null | grep -E ' (install|upgrade|remove) ' | tail -n 400`,
+      sep('ETC'), `find /etc -xdev -type f -newermt @${since} 2>/dev/null | head -40`,
+      sep('FAILED'), 'systemctl list-units --type=service --state=failed --no-legend --plain 2>/dev/null | head -20',
+      sep('UPTIME'), 'cat /proc/uptime',
+      sep('DISK'), "df -B1 -P / | awk 'NR==2{print $3}'",
+      sep('END'),
+    ].join('; '));
+    const part = (name) => {
+      const m = stdout.split(`__SCREENIE_${name}__`)[1];
+      return (m ? m.split(/__SCREENIE_\w+__/)[0] : '').split('\n').map((l) => l.trim()).filter(Boolean);
+    };
+    const packages = part('PKG').map((l) => {
+      const m = l.match(/^(\S+ \S+) (install|upgrade|remove) (\S+)/);
+      if (!m) return null;
+      const t = Date.parse(m[1].replace(' ', 'T'));
+      return t && t >= sinceMs ? { action: m[2], name: m[3].replace(/:\w+$/, '') } : null;
+    }).filter(Boolean);
+    return {
+      logins: part('LOGIN'),
+      packages,
+      etc: part('ETC'),
+      failed: part('FAILED').map((l) => l.split(/\s+/)[0]),
+      uptime: Number((part('UPTIME')[0] || '').split(/\s+/)[0]) || 0,
+      diskUsed: Number(part('DISK')[0]) || 0,
+    };
+  }
+
+  // Mappa dei servizi: porte in ascolto (con il processo), container Docker, servizi systemd.
+  async function services(serverId) {
+    const sep = (n) => `echo __SCREENIE_${n}__`;
+    const { stdout } = await exec(serverId, [
+      sep('LISTEN'), '(ss -tlnpH 2>/dev/null || ss -tlnp 2>/dev/null | tail -n +2)',
+      sep('EST'), "ss -tnH state established 2>/dev/null | awk '{print $3}'",
+      sep('DOCKER'), "docker ps --format '{{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}' 2>/dev/null",
+      sep('UNITS'), 'systemctl list-units --type=service --state=running --no-legend --plain 2>/dev/null | head -60',
+      sep('END'),
+    ].join('; '));
+    const part = (name) => {
+      const m = stdout.split(`__SCREENIE_${name}__`)[1];
+      return (m ? m.split(/__SCREENIE_\w+__/)[0] : '').split('\n').map((l) => l.trim()).filter(Boolean);
+    };
+    const portOf = (addr) => Number((addr || '').split(':').pop()) || 0;
+    const est = new Map();
+    for (const a of part('EST')) est.set(portOf(a), (est.get(portOf(a)) || 0) + 1);
+    const seen = new Set();
+    const listening = [];
+    for (const l of part('LISTEN')) {
+      const cols = l.split(/\s+/);
+      const local = cols.find((c, i) => i >= 2 && /:\d+$/.test(c)) || '';
+      const port = portOf(local);
+      if (!port || seen.has(port)) continue;
+      seen.add(port);
+      const proc = (l.match(/users:\(\("([^"]+)"/) || [])[1] || '';
+      const scope = /^(127\.|\[::1\]|::1)/.test(local) ? 'locale' : 'pubblica';
+      listening.push({ port, process: proc, scope, connections: est.get(port) || 0 });
+    }
+    listening.sort((a, b) => a.port - b.port);
+    const docker = part('DOCKER').map((l) => {
+      const [name, image, ports, status] = l.split('\t');
+      return { name, image, ports: ports || '', status: status || '' };
+    });
+    const units = part('UNITS').map((l) => {
+      const cols = l.split(/\s+/);
+      return { name: cols[0].replace(/\.service$/, ''), description: cols.slice(4).join(' ') };
+    });
+    return { listening, docker, units };
+  }
+
+  // Ricette: un passo alla volta, mantenendo la cartella di lavoro tra un passo e l'altro.
+  const runs = new Map(); // runId -> stream
+  function runStep(serverId, runId, command, cwd) {
+    const { client } = getConn(serverId);
+    const marker = '__SCREENIE_PWD__';
+    const script = `${cwd ? `cd ${q(cwd)} 2>/dev/null; ` : ''}${command}\n__s=$?; printf '\\n${marker}%s\\n' "$PWD"; exit $__s`;
+    return new Promise((resolve, reject) => {
+      client.exec(`bash -lc ${q(script)}`, (err, stream) => {
+        if (err) return reject(err);
+        runs.set(runId, stream);
+        let out = '';
+        const add = (d) => { out += d; if (out.length > 200000) out = out.slice(-200000); };
+        stream.on('data', add);
+        stream.stderr.on('data', add);
+        stream.on('close', (code, signal) => {
+          if (stream.cancelled) signal = signal || 'INT';
+          runs.delete(runId);
+          const i = out.lastIndexOf(marker);
+          const newCwd = i >= 0 ? out.slice(i + marker.length).trim().split('\n')[0] : cwd;
+          resolve({ code: signal ? 130 : code ?? 0, out: (i >= 0 ? out.slice(0, i) : out).replace(/\s+$/, ''), cwd: newCwd });
+        });
+      });
+    });
+  }
+  function cancelStep(runId) {
+    const s = runs.get(runId);
+    if (!s) return;
+    s.cancelled = true;
+    try { s.signal('INT'); } catch { /* */ }
+    setTimeout(() => { try { s.close(); } catch { /* */ } }, 800);
+  }
+
   // ---------- SFTP ----------
 
   const sftpCall = async (serverId, method, ...args) => {
@@ -628,6 +753,7 @@ function createManager({ send, prompt }) {
     tunnels: (id) => (conns.has(id) ? publicTunnels(conns.get(id)) : []),
     openTerm, writeTerm, resizeTerm, closeTerm,
     screenList, screenCreate, screenKill, screenRename, screenWipe, screenAttachCommand, stats,
+    sample, changes, services, runStep, cancelStep,
     list, readFile, writeFile, mkdir, createFile, rename, remove, upload, download,
     editExternally, stopWatchers, shutdown,
     isConnected: (id) => conns.has(id),

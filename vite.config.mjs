@@ -8,5 +8,8 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'esnext',
     chunkSizeWarningLimit: 2000,
+    rollupOptions: {
+      input: { main: 'src/index.html', share: 'src/share.html' },
+    },
   },
 });

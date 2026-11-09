@@ -19,6 +19,9 @@ export const ACTIONS = [
   { id: 'broadcast', label: 'Scrivi in tutti i terminali', def: 'Ctrl+Shift+A' },
   { id: 'toggleSidebar', label: 'Mostra/nascondi barra laterale', def: 'Ctrl+Shift+B' },
   { id: 'toggleInspector', label: 'Mostra/nascondi pannello server', def: 'Ctrl+Shift+D' },
+  { id: 'focus', label: 'Modalità focus (solo il terminale)', def: 'Ctrl+Shift+Enter' },
+  { id: 'recipes', label: 'Ricette', def: 'Ctrl+Shift+R' },
+  { id: 'history', label: 'Cronologia comandi', def: 'Ctrl+Shift+H' },
   { id: 'settings', label: 'Impostazioni', def: 'Ctrl+,' },
   { id: 'shortcuts', label: 'Elenco scorciatoie', def: 'F1' },
 ];

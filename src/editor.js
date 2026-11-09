@@ -19,7 +19,8 @@ import { properties } from '@codemirror/legacy-modes/mode/properties';
 import { toml } from '@codemirror/legacy-modes/mode/toml';
 import { sql } from '@codemirror/legacy-modes/mode/sql';
 import { dockerFile } from '@codemirror/legacy-modes/mode/dockerfile';
-import { h, fail, toggleSwitch } from './dom.js';
+import { h, fail, toggleSwitch, modal, toast } from './dom.js';
+import { diffView } from './diff.js';
 import { effectiveTheme, onThemeChange } from './theme.js';
 
 const api = window.api;
@@ -59,8 +60,13 @@ function languageFor(path) {
   }
 }
 
+// File di configurazione: niente salvataggio automatico, e prima di salvare mostra le differenze.
+const isConfig = (p) => p.startsWith('/etc/') || /\.(conf|cnf|cfg|ini|service|timer|socket|env|ya?ml|toml)$|(^|\/)(\.env[\w.-]*|\.htaccess|Caddyfile|crontab)$/i.test(p);
+
 export async function createEditorTab({ serverId, path, settings, onDirtyChange }) {
   const { content, mtime: initialMtime } = await api.invoke('sftp:read', serverId, path);
+  const config = isConfig(path);
+  let lastVersionAt = 0;
 
   let mtime = initialMtime;
   let savedText = content;
@@ -69,7 +75,8 @@ export async function createEditorTab({ serverId, path, settings, onDirtyChange 
   let conflict = false;
 
   const status = h('span', { class: 'save-status ok', role: 'status' }, 'Salvato');
-  const { input: autoToggle, el: autoSwitch } = toggleSwitch(settings.autosave, 'Salvataggio automatico');
+  const { input: autoToggle, el: autoSwitch } = toggleSwitch(settings.autosave && !config, 'Salvataggio automatico');
+  if (config) autoToggle.disabled = true;
   const banner = h('div', { class: 'conflict-banner hidden' });
   // <bdi> evita che la direzione rtl (usata per tagliare il percorso a sinistra) sposti le barre.
   const pathLabel = h('span', { class: 'editor-path', title: path }, h('bdi', {}, path));
@@ -77,8 +84,10 @@ export async function createEditorTab({ serverId, path, settings, onDirtyChange 
     pathLabel,
     h('span', { class: 'spacer' }),
     status,
-    h('div', { class: 'switch', title: 'Salva automaticamente mentre scrivi' }, autoSwitch, h('span', { 'aria-hidden': 'true', onclick: () => autoToggle.click() }, 'Salvataggio automatico')),
-    h('button', { class: 'btn small', onclick: () => save(), title: 'Ctrl+S' }, 'Salva'),
+    h('div', { class: 'switch', title: config ? 'File di configurazione: prima di salvare ti mostro le differenze' : 'Salva automaticamente mentre scrivi' }, autoSwitch, h('span', { 'aria-hidden': 'true', onclick: () => autoToggle.click() }, 'Salvataggio automatico')),
+    h('button', { class: 'btn small ghost', onclick: () => showDiff(), title: 'Confronta con la versione sul server' }, 'Differenze'),
+    h('button', { class: 'btn small ghost', onclick: () => showVersions(), title: 'Le ultime 10 versioni salvate da Screenie' }, 'Versioni'),
+    h('button', { class: 'btn small', onclick: () => manualSave(), title: 'Ctrl+S' }, 'Salva'),
   );
   const host = h('div', { class: 'editor-host' });
   const el = h('div', { class: 'tab-pane editor-pane' }, header, banner, host);
@@ -97,6 +106,11 @@ export async function createEditorTab({ serverId, path, settings, onDirtyChange 
     if (!force && text === savedText) return true;
     if (conflict && !force) return false;
     setStatus('Salvataggio…', 'busy');
+    // Tiene una copia della versione che sta per essere sostituita (al massimo una ogni 2 minuti).
+    if (Date.now() - lastVersionAt > 120000) {
+      lastVersionAt = Date.now();
+      api.invoke('data:saveVersion', serverId, path, savedText).catch(() => {});
+    }
     saving = (async () => {
       try {
         const r = await api.invoke('sftp:write', serverId, path, text, mtime, force);
@@ -124,6 +138,59 @@ export async function createEditorTab({ serverId, path, settings, onDirtyChange 
       }
     })();
     return saving;
+  }
+
+  // Salvataggio a mano (pulsante o Ctrl+S): per i file di configurazione chiede conferma con le differenze.
+  async function manualSave() {
+    const text = view.state.doc.toString();
+    if (config && text !== savedText) {
+      const ok = await modal({
+        title: `Salvare ${path.split('/').pop()}?`,
+        wide: true,
+        body: h('div', {}, h('p', { class: 'muted' }, 'Queste sono le modifiche rispetto alla versione sul server.'), diffView(savedText, text)),
+        actions: [{ label: 'Annulla', result: false }, { label: 'Salva sul server', kind: 'primary', result: true }],
+      });
+      if (!ok) return false;
+      lastVersionAt = 0; // un salvataggio voluto tiene sempre la versione precedente
+    }
+    return save();
+  }
+
+  function showDiff() {
+    modal({
+      title: 'Differenze con il server',
+      wide: true,
+      body: diffView(savedText, view.state.doc.toString()),
+      actions: [{ label: 'Chiudi', kind: 'primary', result: null }],
+    });
+  }
+
+  async function showVersions() {
+    let list;
+    try { list = await api.invoke('data:versions', serverId, path); } catch (e) { fail(e); return; }
+    if (!list.length) { toast('Ancora nessuna versione salvata: Screenie ne tiene una copia a ogni salvataggio', 'info', 4500); return; }
+    const preview = h('div', { class: 'version-preview' });
+    let chosen = list[0];
+    const items = list.map((v) => h('button', {
+      class: 'version-item', type: 'button',
+      onclick: (e) => {
+        chosen = v;
+        for (const b of e.currentTarget.parentElement.children) b.classList.toggle('active', b === e.currentTarget);
+        preview.replaceChildren(diffView(v.content, view.state.doc.toString()));
+      },
+    }, h('strong', {}, new Date(v.t).toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })), h('span', {}, `${v.content.split('\n').length} righe`)));
+    items[0].classList.add('active');
+    preview.append(diffView(list[0].content, view.state.doc.toString()));
+    const r = await modal({
+      title: 'Versioni precedenti',
+      wide: true,
+      body: h('div', { class: 'versions' }, h('div', { class: 'version-list' }, items), h('div', {}, h('p', { class: 'muted' }, 'Differenze tra la versione scelta e quella che hai aperta adesso.'), preview)),
+      actions: [{ label: 'Chiudi', result: null }, { label: 'Ripristina questa versione', kind: 'primary', value: () => chosen }],
+    });
+    if (r) {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: r.content } });
+      toast("Versione ripristinata nell'editor: salva per scriverla sul server", 'ok', 4500);
+    }
   }
 
   function schedule() {
@@ -171,7 +238,7 @@ export async function createEditorTab({ serverId, path, settings, onDirtyChange 
       extensions: [
         basicSetup,
         themeSlot.of(editorTheme(effectiveTheme())),
-        keymap.of([indentWithTab, { key: 'Mod-s', preventDefault: true, run: () => { save(); return true; } }]),
+        keymap.of([indentWithTab, { key: 'Mod-s', preventDefault: true, run: () => { manualSave(); return true; } }]),
         lang.of(languageFor(path)),
         EditorView.updateListener.of((u) => {
           if (!u.docChanged) return;
@@ -195,7 +262,7 @@ export async function createEditorTab({ serverId, path, settings, onDirtyChange 
     show: () => requestAnimationFrame(() => view.focus()),
     focus: () => view.focus(),
     isDirty,
-    save,
+    save: () => manualSave(),
     dispose: () => {
       offTheme();
       clearTimeout(timer);

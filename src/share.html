@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:">
+  <title>Screenie · terminale condiviso</title>
+</head>
+<body>
+  <header class="bar">
+    <strong>Screenie</strong>
+    <span id="title" class="title"></span>
+    <span class="spacer"></span>
+    <span id="mode" class="chip">sola lettura</span>
+    <span id="state" class="state" role="status">connessione…</span>
+  </header>
+  <main id="term"></main>
+  <script type="module" src="./share-viewer.js"></script>
+</body>
+</html>

@@ -37,12 +37,14 @@ const defaults = {
     notifications: true,
     // Comandi salvati e scorciatoie
     snippets: [],
+    recipes: [],
     keys: {},
   },
+  notes: {}, // serverId -> diario in markdown
 };
 
 const KEY_ACTIONS = ['palette', 'newTerminal', 'newScreen', 'closeTab', 'nextTab', 'prevTab', 'toggleSidebar',
-  'toggleInspector', 'settings', 'search', 'splitRight', 'splitDown', 'broadcast', 'shortcuts'];
+  'toggleInspector', 'settings', 'search', 'splitRight', 'splitDown', 'broadcast', 'shortcuts', 'focus', 'recipes', 'history'];
 
 // Scarta valori non validi prima di salvarli.
 function cleanSettings(patch) {
@@ -73,6 +75,13 @@ function cleanSettings(patch) {
     out.snippets = (Array.isArray(out.snippets) ? out.snippets : []).slice(0, 200)
       .map((s) => ({ id: String(s?.id || crypto.randomUUID()), name: String(s?.name || '').trim().slice(0, 80), command: String(s?.command || '').slice(0, 4000) }))
       .filter((s) => s.name && s.command);
+  }
+  if ('recipes' in out) {
+    out.recipes = (Array.isArray(out.recipes) ? out.recipes : []).slice(0, 200).map((r) => ({
+      id: String(r?.id || crypto.randomUUID()).slice(0, 64),
+      name: String(r?.name || '').trim().slice(0, 80),
+      steps: (Array.isArray(r?.steps) ? r.steps : []).map((x) => String(x).slice(0, 4000)).filter((x) => x.trim()).slice(0, 50),
+    })).filter((r) => r.name && r.steps.length);
   }
   if ('keys' in out) {
     const keys = {};
@@ -161,6 +170,9 @@ function saveServer(server) {
     agentForward: !!server.agentForward,
     jump: server.jump && server.jump !== id ? String(server.jump) : '',
     tunnels: cleanTunnels(server.tunnels),
+    color: /^#[0-9a-f]{6}$/i.test(server.color || '') ? server.color : '',
+    glyph: String(server.glyph || '').trim().slice(0, 2),
+    production: !!server.production,
   };
   if (!clean.host || !clean.username) throw new Error('Host e utente sono obbligatori');
   const i = d.servers.findIndex((s) => s.id === clean.id);
@@ -176,6 +188,7 @@ function deleteServer(id) {
   for (const s of d.servers) if (s.jump === id) s.jump = '';
   delete d.secrets[id];
   delete d.favorites?.[id];
+  delete d.notes?.[id];
   save();
 }
 
@@ -230,6 +243,18 @@ function setFavorites(serverId, list) {
   return d.favorites[serverId];
 }
 
+function getNote(serverId) {
+  return load().notes?.[serverId] || '';
+}
+
+function setNote(serverId, text) {
+  const d = load();
+  d.notes ||= {};
+  if (text) d.notes[serverId] = String(text).slice(0, 200000);
+  else delete d.notes[serverId];
+  save();
+}
+
 function getSettings() {
   return load().settings;
 }
@@ -254,6 +279,7 @@ function exportConfig() {
     servers: d.servers,
     favorites: d.favorites || {},
     knownHosts: d.knownHosts,
+    notes: d.notes || {},
     settings,
   };
 }
@@ -271,6 +297,7 @@ function importConfig(obj) {
   }
   d.favorites = { ...(d.favorites || {}), ...(obj.favorites || {}) };
   d.knownHosts = { ...d.knownHosts, ...(obj.knownHosts || {}) };
+  if (obj.notes && typeof obj.notes === 'object') d.notes = { ...(d.notes || {}), ...obj.notes };
   if (obj.settings) d.settings = { ...d.settings, ...cleanSettings(obj.settings) };
   save();
   return { added, total: obj.servers.length };
@@ -280,5 +307,5 @@ module.exports = {
   listServers, saveServer, deleteServer, getServer,
   setPassphrase, getPassphrase, forgetPassphrase,
   getKnownHost, setKnownHost, getSettings, setSettings, getFavorites, setFavorites,
-  exportConfig, importConfig, cleanTunnels, KEY_ACTIONS,
+  exportConfig, importConfig, cleanTunnels, KEY_ACTIONS, getNote, setNote,
 };

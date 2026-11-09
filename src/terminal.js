@@ -21,7 +21,30 @@ const hooks = {
   notify: () => {}, // notifica di sistema
   snippets: () => [],
   onBroadcastChange: () => {},
+  onCommand: () => {}, // comando eseguito (per la cronologia)
+  needsConfirm: () => false, // il comando va confermato su questo server?
+  confirm: async () => true,
+  share: () => {}, // condividi il riquadro in rete locale
 };
+
+// Il comando sulla riga del cursore, senza il prompt ("utente@host:~$ ").
+// Se non c'è un prompt riconoscibile (password, programmi interattivi) non registra nulla.
+function currentCommand(term) {
+  const b = term.buffer.active;
+  if (b.type !== 'normal') return '';
+  let y = b.baseY + b.cursorY;
+  let line = b.getLine(y);
+  if (!line) return '';
+  let text = line.translateToString(true);
+  while (line?.isWrapped && y > 0) {
+    y--;
+    line = b.getLine(y);
+    text = (line?.translateToString(true) || '') + text;
+  }
+  for (let y2 = b.baseY + b.cursorY + 1; b.getLine(y2)?.isWrapped; y2++) text += b.getLine(y2).translateToString(true);
+  const m = text.match(/^[^$#]{0,200}?[$#] (.*)$/);
+  return m ? m[1].trim() : '';
+}
 export function configureTerminals(h2) { Object.assign(hooks, h2); }
 
 // ---------- Trasmissione: quello che scrivi va a tutti i terminali aperti ----------
@@ -65,7 +88,8 @@ export function createTerminalTab({ serverId, title, command, screen, fontSize =
     !screen && iconButton('splitRight', 'Dividi a destra (Ctrl+Shift+E)', () => tab.split('row')),
     !screen && iconButton('splitDown', 'Dividi sotto (Ctrl+Shift+O)', () => tab.split('col')),
     iconButton('snippet', 'Comandi salvati', (e) => snippetMenu(e.currentTarget)),
-    iconButton('broadcast', 'Scrivi in tutti i terminali', () => setBroadcast(!broadcast), 'broadcast-btn'));
+    iconButton('broadcast', 'Scrivi in tutti i terminali', () => setBroadcast(!broadcast), 'broadcast-btn'),
+    iconButton('globe', 'Condividi in rete locale', () => hooks.share(tab), 'share-btn'));
 
   const toolbar = screen ? h('div', { class: 'term-toolbar' },
     h('span', { class: 'chip screen-chip' }, 'screen'),
@@ -124,7 +148,7 @@ export function createTerminalTab({ serverId, title, command, screen, fontSize =
     term.loadAddon(new WebLinksAddon((e, uri) => window.open(uri)));
 
     const pane = {
-      id, term, host, cell, searchAddon, alive: false, opened: false, title: '',
+      id, term, host, cell, searchAddon, serverId, alive: false, opened: false, title: '',
       fit: () => { if (pane.opened && cell.offsetParent) { try { fitAddon.fit(); } catch { /* nascosto */ } } },
       write: (d) => api.termWrite(id, d),
     };
@@ -161,8 +185,22 @@ export function createTerminalTab({ serverId, title, command, screen, fontSize =
 
     term.onData((d) => {
       if (!pane.alive) return;
-      if (broadcast) for (const p of livePanes()) p.write(d);
-      else pane.write(d);
+      const targets = broadcast ? livePanes() : [pane];
+      if (d === '\r') {
+        const cmd = currentCommand(term);
+        if (cmd) {
+          const servers = [...new Set(targets.map((p) => p.serverId))];
+          if (servers.some((id) => hooks.needsConfirm(id, cmd))) {
+            hooks.confirm(servers.find((id) => hooks.needsConfirm(id, cmd)), cmd).then((ok) => {
+              if (ok) { for (const p of targets) if (p.alive) p.write('\r'); servers.forEach((id) => hooks.onCommand(id, cmd)); }
+              term.focus();
+            });
+            return;
+          }
+          servers.forEach((id) => hooks.onCommand(id, cmd));
+        }
+      }
+      for (const p of targets) p.write(d);
     });
     term.onResize(({ cols, rows }) => pane.alive && api.termResize(id, cols, rows));
     // Il prompt di bash su Ubuntu/Debian imposta il titolo a "utente@host: cartella".
@@ -323,11 +361,20 @@ export function createTerminalTab({ serverId, title, command, screen, fontSize =
       size = n;
       for (const p of list) { p.term.options.fontSize = n; p.fit(); }
     },
-    send(text) {
+    async send(text) {
       const p = focused || list[0];
-      if (p?.alive) p.write(text);
-      else toast('La sessione non è attiva', 'warn');
+      if (!p?.alive) { toast('La sessione non è attiva', 'warn'); return false; }
+      const cmd = text.replace(/\r$/, '').trim();
+      if (text.endsWith('\r') && cmd) {
+        if (hooks.needsConfirm(serverId, cmd) && !(await hooks.confirm(serverId, cmd))) { p.term.focus(); return false; }
+        hooks.onCommand(serverId, cmd);
+      }
+      p.write(text);
+      p.term.focus();
+      return true;
     },
+    // Riquadro attivo, per la condivisione in rete locale.
+    get activePane() { const p = focused || list[0]; return p ? { id: p.id, cols: p.term.cols, rows: p.term.rows, alive: p.alive } : null; },
     split(direction = 'row') {
       if (screen) return;
       if (list.length >= 4) { toast('Al massimo 4 riquadri per scheda', 'warn'); return; }
