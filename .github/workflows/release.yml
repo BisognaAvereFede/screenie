@@ -28,6 +28,7 @@ jobs:
   mac:
     runs-on: macos-latest
     needs: windows # la Release la crea il job Windows; qui si aggiunge il .dmg
+    continue-on-error: true # il Mac è sperimentale: se fallisce, la Release Windows resta valida
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,7 +38,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Dmg (non firmato) e pubblicazione
-        run: npx electron-builder --mac --universal --publish always
+        run: npx electron-builder --mac --arm64 --x64 --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
