@@ -44,7 +44,8 @@
         "dmg"
       ],
       "category": "public.app-category.developer-tools",
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "artifactName": "Screenie-${version}-mac-${arch}.${ext}"
     },
     "publish": [
       {

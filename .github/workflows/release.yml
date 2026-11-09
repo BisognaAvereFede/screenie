@@ -20,6 +20,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # La Release va creata prima: electron-builder carica i file in parallelo
+      # e, se non esiste, ne crea due doppioni.
+      - name: Crea la Release
+        shell: bash
+        run: gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "${GITHUB_REF_NAME#v}" --notes "Screenie ${GITHUB_REF_NAME#v}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Installer e pubblicazione
         run: npx electron-builder --win --publish always
         env:
