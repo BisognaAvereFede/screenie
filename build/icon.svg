@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="233 68 700 700">
+  <defs>
+    <linearGradient id="screeniePurple" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#A78BFA"/>
+      <stop offset="1" stop-color="#7652E8"/>
+    </linearGradient>
+    <linearGradient id="badgePurple" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6D4BD8"/>
+      <stop offset="1" stop-color="#392477"/>
+    </linearGradient>
+  </defs>
+  <rect x="248" y="220" width="528" height="382" rx="82" fill="url(#screeniePurple)"/>
+  <rect x="284" y="256" width="456" height="310" rx="55" fill="#100D20"/>
+  <path d="M339 256h346L284 461V311q0-55 55-55Z" fill="#FFFFFF" opacity=".035"/>
+  <rect x="365" y="365" width="124" height="48" rx="24" fill="#FFFDFB"/>
+  <rect x="535" y="365" width="124" height="48" rx="24" fill="#FFFDFB"/>
+  <path d="M456 602h112l30 70H426l30-70Z" fill="#5D42B8"/>
+  <rect x="355" y="666" width="314" height="42" rx="21" fill="url(#screeniePurple)"/>
+  <rect x="604" y="478" width="252" height="174" rx="42" fill="url(#badgePurple)" stroke="#8B6AF1" stroke-width="12"/>
+  <path d="m670 526 40 38-40 38" fill="none" stroke="#FFFDFB" stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M733 604h38" fill="none" stroke="#FFFDFB" stroke-width="17" stroke-linecap="round"/>
+  <g fill="#9675F2">
+    <rect x="742" y="132" width="32" height="76" rx="16" transform="rotate(15 758 170)"/>
+    <rect x="808" y="160" width="32" height="76" rx="16" transform="rotate(42 824 198)"/>
+    <rect x="864" y="225" width="32" height="76" rx="16" transform="rotate(78 880 263)"/>
+  </g>
+</svg>
